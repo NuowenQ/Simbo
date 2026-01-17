@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-from simbo.pages import (
+from simbo.views import (
     render_main_page,
     render_program_page,
     render_robot_page,
@@ -83,58 +83,32 @@ st.markdown("""
         color: #888;
         font-style: italic;
     }
-    /* Navigation card styles */
-    .nav-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        border-radius: 16px;
-        padding: 2rem;
-        text-align: center;
-        cursor: pointer;
-        transition: all 0.3s ease;
-        height: 200px;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
-        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
-    }
-    .nav-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
-    }
-    .nav-card-program {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    }
-    .nav-card-robot {
-        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-    }
-    .nav-card-world {
-        background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
-    }
-    .nav-card-workspace {
-        background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);
-    }
-    .nav-card-icon {
-        font-size: 3rem;
-        margin-bottom: 0.5rem;
-    }
-    .nav-card-title {
-        font-size: 1.5rem;
-        font-weight: bold;
-        color: white;
-        margin: 0;
-        text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-    }
-    .nav-card-desc {
-        font-size: 0.9rem;
-        color: rgba(255, 255, 255, 0.9);
-        margin-top: 0.5rem;
-    }
     .main-page-container {
         padding: 2rem 0;
     }
     .back-button {
         margin-bottom: 1rem;
+    }
+
+    /* Navigation card buttons - light grey */
+    button[kind="primary"] {
+        height: 180px !important;
+        border-radius: 16px !important;
+        font-size: 1.1rem !important;
+        font-weight: 500 !important;
+        white-space: pre-wrap !important;
+        line-height: 1.6 !important;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+        transition: all 0.3s ease !important;
+        border: 1px solid #e0e0e0 !important;
+        color: #333 !important;
+        background: #f5f5f5 !important;
+    }
+
+    button[kind="primary"]:hover {
+        transform: translateY(-3px) !important;
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2) !important;
+        background: #ebebeb !important;
     }
 </style>
 """, unsafe_allow_html=True)

@@ -1,15 +1,15 @@
 """
-Simbo Pages Module.
+Simbo Views Module.
 
 Contains individual page components for the Streamlit UI.
 """
 
-from simbo.pages.home import render_main_page
-from simbo.pages.program import render_program_page
-from simbo.pages.robot import render_robot_page
-from simbo.pages.world import render_world_page
-from simbo.pages.workspace_manager import render_workspace_manager_page
-from simbo.pages.components import (
+from simbo.views.home import render_main_page
+from simbo.views.program import render_program_page
+from simbo.views.robot import render_robot_page
+from simbo.views.world import render_world_page
+from simbo.views.workspace_manager import render_workspace_manager_page
+from simbo.views.components import (
     render_sidebar,
     render_home_sidebar,
     render_status_indicators,

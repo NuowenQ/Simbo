@@ -6,7 +6,7 @@ Robot configuration and management interface (placeholder).
 
 import streamlit as st
 
-from simbo.pages.components import render_back_button
+from simbo.views.components import render_back_button
 
 
 def render_robot_page():

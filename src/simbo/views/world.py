@@ -6,7 +6,7 @@ Gazebo world editor interface (placeholder).
 
 import streamlit as st
 
-from simbo.pages.components import render_back_button
+from simbo.views.components import render_back_button
 
 
 def render_world_page():

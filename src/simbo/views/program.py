@@ -6,7 +6,7 @@ AI-powered coding assistant interface with chat functionality.
 
 import streamlit as st
 
-from simbo.pages.components import (
+from simbo.views.components import (
     render_back_button,
     render_status_indicators,
     render_quick_actions,
