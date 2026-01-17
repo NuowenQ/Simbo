@@ -80,6 +80,59 @@ st.markdown("""
         color: #888;
         font-style: italic;
     }
+    /* Navigation card styles */
+    .nav-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border-radius: 16px;
+        padding: 2rem;
+        text-align: center;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        height: 200px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+    }
+    .nav-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+    }
+    .nav-card-program {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    }
+    .nav-card-robot {
+        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    }
+    .nav-card-world {
+        background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+    }
+    .nav-card-workspace {
+        background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);
+    }
+    .nav-card-icon {
+        font-size: 3rem;
+        margin-bottom: 0.5rem;
+    }
+    .nav-card-title {
+        font-size: 1.5rem;
+        font-weight: bold;
+        color: white;
+        margin: 0;
+        text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    }
+    .nav-card-desc {
+        font-size: 0.9rem;
+        color: rgba(255, 255, 255, 0.9);
+        margin-top: 0.5rem;
+    }
+    .main-page-container {
+        padding: 2rem 0;
+    }
+    .back-button {
+        margin-bottom: 1rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -97,11 +150,18 @@ def init_session_state():
         "files_created": [],
         "files_modified": [],
         "is_processing": False,
+        "current_page": "home",  # home, program, robot, world, workspace_manager
+        "app_version": "2.0",  # Version to track UI updates
     }
 
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+    # Force reset to home page if app version changed (new UI)
+    if st.session_state.get("app_version") != "2.0":
+        st.session_state.app_version = "2.0"
+        st.session_state.current_page = "home"
 
 
 def initialize_agent() -> bool:
@@ -242,6 +302,10 @@ def render_sidebar():
             st.divider()
 
         # Actions
+        if st.button("🏠 Back to Home", use_container_width=True):
+            st.session_state.current_page = "home"
+            st.rerun()
+
         col1, col2 = st.columns(2)
         with col1:
             if st.button("🗑️ Clear Chat", use_container_width=True):
@@ -255,6 +319,334 @@ def render_sidebar():
                 st.session_state.thread_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                 st.session_state.messages = []
                 st.rerun()
+
+
+def render_home_sidebar():
+    """Render a simplified sidebar for the home page."""
+    with st.sidebar:
+        st.markdown("## ⚙️ Configuration")
+
+        # API Key input
+        api_key = st.text_input(
+            "OpenAI API Key",
+            value=st.session_state.api_key,
+            type="password",
+            help="Enter your OpenAI API key"
+        )
+        if api_key != st.session_state.api_key:
+            st.session_state.api_key = api_key
+            st.session_state.agent = None
+
+        # Model selection
+        model = st.selectbox(
+            "Model",
+            ["gpt-4-turbo-preview", "gpt-4o", "gpt-4", "gpt-3.5-turbo"],
+            index=0,
+            help="Select the OpenAI model to use"
+        )
+        if model != st.session_state.model:
+            st.session_state.model = model
+            st.session_state.agent = None
+
+        st.divider()
+
+        # Workspace configuration
+        st.markdown("## 📁 ROS Workspace")
+
+        workspace_path = st.text_input(
+            "Workspace Path",
+            value=st.session_state.workspace_path,
+            placeholder="/home/user/catkin_ws",
+            help="Path to your ROS workspace"
+        )
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button("📂 Set Path", use_container_width=True):
+                if workspace_path:
+                    st.session_state.workspace_path = workspace_path
+
+        with col2:
+            analyze_clicked = st.button(
+                "🔍 Analyze",
+                use_container_width=True,
+                disabled=not workspace_path
+            )
+
+        if analyze_clicked and workspace_path:
+            st.session_state.workspace_path = workspace_path
+            with st.spinner("Analyzing workspace..."):
+                st.session_state.workspace_info = analyze_workspace_ui(workspace_path)
+
+        # Display workspace info
+        if st.session_state.workspace_info:
+            info = st.session_state.workspace_info
+            st.success("Workspace analyzed!")
+
+            st.markdown("### Environment")
+            st.markdown(f"**ROS:** {info.ros_version} ({info.ros_distro})")
+            st.markdown(f"**Gazebo:** {info.gazebo_version}")
+
+            st.markdown("### Packages")
+            if info.packages:
+                for pkg in info.packages[:5]:
+                    st.markdown(f"- `{pkg}`")
+                if len(info.packages) > 5:
+                    st.markdown(f"*+{len(info.packages) - 5} more*")
+            else:
+                st.markdown("*No packages found*")
+
+
+def render_main_page():
+    """Render the main home page with navigation cards."""
+    # Header
+    st.markdown('<p class="main-header">🤖 Simbo</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="sub-header">Autonomous AI Assistant for ROS/Gazebo Simulation Development</p>',
+        unsafe_allow_html=True
+    )
+
+    # Status indicators
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if st.session_state.api_key:
+            st.success("🔑 API Key Set")
+        else:
+            st.error("🔑 API Key Required")
+
+    with col2:
+        if st.session_state.workspace_path:
+            st.success(f"📁 {os.path.basename(st.session_state.workspace_path)}")
+        else:
+            st.warning("📁 Set Workspace Path")
+
+    with col3:
+        st.info(f"🧠 {st.session_state.model}")
+
+    st.divider()
+
+    # Navigation cards
+    st.markdown("### Select a Module")
+    st.markdown("")
+
+    # Create 2x2 grid for navigation cards
+    col1, col2 = st.columns(2)
+
+    with col1:
+        # Program card
+        st.markdown("""
+        <div class="nav-card nav-card-program">
+            <div class="nav-card-icon">💻</div>
+            <p class="nav-card-title">Program</p>
+            <p class="nav-card-desc">AI-powered coding assistant for ROS development</p>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("Open Program", key="btn_program", use_container_width=True):
+            st.session_state.current_page = "program"
+            st.rerun()
+
+    with col2:
+        # Robot card
+        st.markdown("""
+        <div class="nav-card nav-card-robot">
+            <div class="nav-card-icon">🦾</div>
+            <p class="nav-card-title">Robot</p>
+            <p class="nav-card-desc">Configure and manage robot models</p>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("Open Robot", key="btn_robot", use_container_width=True):
+            st.session_state.current_page = "robot"
+            st.rerun()
+
+    st.markdown("")  # Spacing
+
+    col3, col4 = st.columns(2)
+
+    with col3:
+        # World card
+        st.markdown("""
+        <div class="nav-card nav-card-world">
+            <div class="nav-card-icon">🌍</div>
+            <p class="nav-card-title">World</p>
+            <p class="nav-card-desc">Design and edit Gazebo simulation worlds</p>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("Open World", key="btn_world", use_container_width=True):
+            st.session_state.current_page = "world"
+            st.rerun()
+
+    with col4:
+        # Workspace Manager card
+        st.markdown("""
+        <div class="nav-card nav-card-workspace">
+            <div class="nav-card-icon">📂</div>
+            <p class="nav-card-title">Workspace Manager</p>
+            <p class="nav-card-desc">Manage ROS packages and workspace structure</p>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("Open Workspace Manager", key="btn_workspace", use_container_width=True):
+            st.session_state.current_page = "workspace_manager"
+            st.rerun()
+
+    # Footer tips
+    st.markdown("""
+    ---
+    **💡 Tips:**
+    - Set your ROS workspace path in the sidebar first
+    - **Program**: Use the AI coding agent to create controllers, launch files, or any ROS code
+    - **Robot**: Configure robot models and URDF files
+    - **World**: Design Gazebo simulation environments
+    - **Workspace Manager**: Manage packages and build your workspace
+    """)
+
+
+def render_program_page():
+    """Render the Program page (coding agent interface)."""
+    # Back button
+    if st.button("← Back to Home", key="back_from_program"):
+        st.session_state.current_page = "home"
+        st.rerun()
+
+    # Header
+    st.markdown('<p class="main-header">💻 Program</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="sub-header">AI-powered Coding Assistant for ROS/Gazebo Development</p>',
+        unsafe_allow_html=True
+    )
+
+    # Status indicators
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if st.session_state.api_key:
+            st.success("🔑 API Key Set")
+        else:
+            st.error("🔑 API Key Required")
+
+    with col2:
+        if st.session_state.workspace_path:
+            st.success(f"📁 {os.path.basename(st.session_state.workspace_path)}")
+        else:
+            st.warning("📁 Set Workspace Path")
+
+    with col3:
+        st.info(f"🧠 {st.session_state.model}")
+
+    st.divider()
+
+    # Quick actions (only if workspace is set)
+    if st.session_state.workspace_path:
+        render_quick_actions()
+        st.divider()
+
+    # Main chat interface
+    render_chat()
+
+
+def render_robot_page():
+    """Render the Robot configuration page (placeholder)."""
+    # Back button
+    if st.button("← Back to Home", key="back_from_robot"):
+        st.session_state.current_page = "home"
+        st.rerun()
+
+    st.markdown('<p class="main-header">🦾 Robot</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="sub-header">Configure and Manage Robot Models</p>',
+        unsafe_allow_html=True
+    )
+
+    st.divider()
+
+    st.info("🚧 This module is under development. Robot configuration features coming soon!")
+
+    st.markdown("""
+    ### Planned Features:
+    - URDF/Xacro robot model browser
+    - Robot visualization preview
+    - Joint and link configuration
+    - Sensor configuration
+    - Robot model import/export
+    """)
+
+
+def render_world_page():
+    """Render the World editor page (placeholder)."""
+    # Back button
+    if st.button("← Back to Home", key="back_from_world"):
+        st.session_state.current_page = "home"
+        st.rerun()
+
+    st.markdown('<p class="main-header">🌍 World</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="sub-header">Design and Edit Gazebo Simulation Worlds</p>',
+        unsafe_allow_html=True
+    )
+
+    st.divider()
+
+    st.info("🚧 This module is under development. World editor features coming soon!")
+
+    st.markdown("""
+    ### Planned Features:
+    - Visual world editor
+    - Model library browser
+    - Physics configuration
+    - Lighting and environment settings
+    - World file import/export
+    """)
+
+
+def render_workspace_manager_page():
+    """Render the Workspace Manager page (placeholder)."""
+    # Back button
+    if st.button("← Back to Home", key="back_from_workspace"):
+        st.session_state.current_page = "home"
+        st.rerun()
+
+    st.markdown('<p class="main-header">📂 Workspace Manager</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="sub-header">Manage ROS Packages and Workspace Structure</p>',
+        unsafe_allow_html=True
+    )
+
+    st.divider()
+
+    # Show workspace info if available
+    if st.session_state.workspace_info:
+        info = st.session_state.workspace_info
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("### Environment Info")
+            st.markdown(f"**Path:** `{info.path}`")
+            st.markdown(f"**ROS Version:** {info.ros_version}")
+            st.markdown(f"**ROS Distro:** {info.ros_distro}")
+            st.markdown(f"**Gazebo Version:** {info.gazebo_version}")
+
+        with col2:
+            st.markdown("### Packages")
+            if info.packages:
+                for pkg in info.packages:
+                    st.markdown(f"- `{pkg}`")
+            else:
+                st.markdown("*No packages found*")
+
+        st.divider()
+
+    st.info("🚧 Additional workspace management features coming soon!")
+
+    st.markdown("""
+    ### Planned Features:
+    - Package creation wizard
+    - Dependency management
+    - Build and compile tools
+    - Package templates
+    - Catkin/Colcon workspace tools
+    """)
 
 
 def extract_tool_info(message) -> List[Dict[str, Any]]:
@@ -456,53 +848,31 @@ def render_quick_actions():
 def main():
     """Main application entry point."""
     init_session_state()
-    render_sidebar()
 
-    # Header
-    st.markdown('<p class="main-header">🤖 Simbo</p>', unsafe_allow_html=True)
-    st.markdown(
-        '<p class="sub-header">Autonomous AI Assistant for ROS/Gazebo Simulation Development</p>',
-        unsafe_allow_html=True
-    )
+    # Route to appropriate page based on current_page state
+    current_page = st.session_state.current_page
 
-    # Status indicators
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        if st.session_state.api_key:
-            st.success("🔑 API Key Set")
-        else:
-            st.error("🔑 API Key Required")
-
-    with col2:
-        if st.session_state.workspace_path:
-            st.success(f"📁 {os.path.basename(st.session_state.workspace_path)}")
-        else:
-            st.warning("📁 Set Workspace Path")
-
-    with col3:
-        st.info(f"🧠 {st.session_state.model}")
-
-    st.divider()
-
-    # Quick actions (only if workspace is set)
-    if st.session_state.workspace_path:
-        render_quick_actions()
-        st.divider()
-
-    # Main chat interface
-    render_chat()
-
-    # Footer hint
-    if not st.session_state.messages:
-        st.markdown("""
-        ---
-        **💡 Tips:**
-        - Set your ROS workspace path in the sidebar first
-        - Ask Simbo to create controllers, launch files, or any ROS code
-        - Simbo will directly write files to your workspace
-        - Watch the real-time progress as Simbo works on your request
-        """)
+    if current_page == "home":
+        # Home page uses simplified sidebar
+        render_home_sidebar()
+        render_main_page()
+    elif current_page == "program":
+        # Program page uses full sidebar with chat features
+        render_sidebar()
+        render_program_page()
+    elif current_page == "robot":
+        render_home_sidebar()
+        render_robot_page()
+    elif current_page == "world":
+        render_home_sidebar()
+        render_world_page()
+    elif current_page == "workspace_manager":
+        render_home_sidebar()
+        render_workspace_manager_page()
+    else:
+        # Default to home page
+        render_home_sidebar()
+        render_main_page()
 
 
 if __name__ == "__main__":
