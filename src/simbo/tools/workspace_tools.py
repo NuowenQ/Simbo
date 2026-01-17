@@ -532,6 +532,347 @@ def check_python_script_executable(script_path: str) -> Dict[str, any]:
 
 
 @tool
+def check_setup_cfg(package_path: str) -> Dict[str, any]:
+    """
+    Check if a ROS2 Python package has a proper setup.cfg file.
+
+    The setup.cfg file is CRITICAL for ROS2 Python packages because it tells
+    colcon where to install the executable scripts. Without it, executables
+    are installed to bin/ instead of lib/<package_name>/, and ros2 run will
+    fail with "No executable found".
+
+    Args:
+        package_path: Path to the ROS2 package directory
+
+    Returns:
+        Dictionary with validation results and the correct setup.cfg content
+    """
+    result = {
+        "exists": False,
+        "is_valid": False,
+        "has_scripts_dir": False,
+        "has_install_scripts": False,
+        "current_content": None,
+        "correct_content": None,
+        "errors": [],
+        "fix_suggestions": []
+    }
+
+    setup_cfg_path = os.path.join(package_path, "setup.cfg")
+    package_name = os.path.basename(package_path)
+
+    # The correct setup.cfg content for ROS2 Python packages
+    correct_content = f"""[develop]
+script_dir=$base/lib/{package_name}
+[install]
+install_scripts=$base/lib/{package_name}
+"""
+    result["correct_content"] = correct_content
+
+    if not os.path.exists(setup_cfg_path):
+        result["errors"].append(f"setup.cfg not found in {package_path}")
+        result["fix_suggestions"].append(
+            f"Create setup.cfg with content:\n{correct_content}"
+        )
+        return result
+
+    result["exists"] = True
+
+    try:
+        with open(setup_cfg_path, 'r') as f:
+            content = f.read()
+        result["current_content"] = content
+
+        # Check for the critical install_scripts directive
+        if "install_scripts" in content:
+            result["has_install_scripts"] = True
+            # Verify it points to the correct location
+            expected_path = f"lib/{package_name}"
+            if expected_path in content:
+                result["is_valid"] = True
+            else:
+                result["errors"].append(
+                    f"install_scripts does not point to lib/{package_name}"
+                )
+                result["fix_suggestions"].append(
+                    f"Update setup.cfg install_scripts to: $base/lib/{package_name}"
+                )
+        else:
+            result["errors"].append("setup.cfg missing install_scripts directive")
+            result["fix_suggestions"].append(
+                f"Add to setup.cfg [install] section: install_scripts=$base/lib/{package_name}"
+            )
+
+        # Check for script_dir in develop section
+        if "script_dir" in content:
+            result["has_scripts_dir"] = True
+
+    except Exception as e:
+        result["errors"].append(f"Error reading setup.cfg: {str(e)}")
+
+    return result
+
+
+@tool
+def create_setup_cfg(package_path: str) -> Dict[str, any]:
+    """
+    Create or fix the setup.cfg file for a ROS2 Python package.
+
+    This is CRITICAL for ROS2 Python packages. Without setup.cfg, executables
+    are installed to the wrong location and ros2 run will fail.
+
+    Args:
+        package_path: Path to the ROS2 package directory
+
+    Returns:
+        Dictionary with creation/update status
+    """
+    result = {
+        "success": False,
+        "created": False,
+        "updated": False,
+        "path": None,
+        "content": None,
+        "error": None
+    }
+
+    setup_cfg_path = os.path.join(package_path, "setup.cfg")
+    package_name = os.path.basename(package_path)
+
+    # The correct setup.cfg content
+    correct_content = f"""[develop]
+script_dir=$base/lib/{package_name}
+[install]
+install_scripts=$base/lib/{package_name}
+"""
+
+    result["path"] = setup_cfg_path
+    result["content"] = correct_content
+
+    try:
+        file_existed = os.path.exists(setup_cfg_path)
+
+        with open(setup_cfg_path, 'w') as f:
+            f.write(correct_content)
+
+        result["success"] = True
+        if file_existed:
+            result["updated"] = True
+        else:
+            result["created"] = True
+
+    except Exception as e:
+        result["error"] = f"Error writing setup.cfg: {str(e)}"
+
+    return result
+
+
+@tool
+def create_ros2_python_package(
+    workspace_path: str,
+    package_name: str,
+    node_name: str,
+    description: str = "A ROS2 Python package",
+    maintainer: str = "user",
+    maintainer_email: str = "user@example.com",
+    dependencies: List[str] = None
+) -> Dict[str, any]:
+    """
+    Create a complete ROS2 Python package structure with all required files.
+
+    This creates the CORRECT ament_python package structure:
+    - package.xml (with ament_python build type)
+    - setup.py (with entry_points)
+    - setup.cfg (CRITICAL for executable installation)
+    - resource/<package_name> (ament marker)
+    - <package_name>/__init__.py
+    - <package_name>/<node_name>.py (template node)
+
+    NO CMakeLists.txt is created - this is a Python-only package!
+
+    Args:
+        workspace_path: Path to the ROS workspace
+        package_name: Name of the package to create
+        node_name: Name of the main node (without .py extension)
+        description: Package description
+        maintainer: Package maintainer name
+        maintainer_email: Maintainer email
+        dependencies: List of ROS2 dependencies (default: ['rclpy', 'std_msgs'])
+
+    Returns:
+        Dictionary with creation status and file paths
+    """
+    if dependencies is None:
+        dependencies = ['rclpy', 'std_msgs']
+
+    result = {
+        "success": False,
+        "package_path": None,
+        "files_created": [],
+        "errors": []
+    }
+
+    # Package path
+    src_path = os.path.join(workspace_path, "src")
+    package_path = os.path.join(src_path, package_name)
+    result["package_path"] = package_path
+
+    try:
+        # Create directory structure
+        os.makedirs(package_path, exist_ok=True)
+        os.makedirs(os.path.join(package_path, package_name), exist_ok=True)
+        os.makedirs(os.path.join(package_path, "resource"), exist_ok=True)
+
+        # 1. Create package.xml (ament_python - NO CMake!)
+        deps_xml = "\n  ".join([f"<depend>{dep}</depend>" for dep in dependencies])
+        package_xml_content = f"""<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>{package_name}</name>
+  <version>0.0.1</version>
+  <description>{description}</description>
+  <maintainer email="{maintainer_email}">{maintainer}</maintainer>
+  <license>Apache-2.0</license>
+
+  {deps_xml}
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
+"""
+        package_xml_path = os.path.join(package_path, "package.xml")
+        with open(package_xml_path, 'w') as f:
+            f.write(package_xml_content)
+        result["files_created"].append(package_xml_path)
+
+        # 2. Create setup.py with entry_points
+        setup_py_content = f"""from setuptools import find_packages, setup
+
+package_name = '{package_name}'
+
+setup(
+    name=package_name,
+    version='0.0.1',
+    packages=find_packages(exclude=['test']),
+    data_files=[
+        ('share/ament_index/resource_index/packages',
+            ['resource/' + package_name]),
+        ('share/' + package_name, ['package.xml']),
+    ],
+    install_requires=['setuptools'],
+    zip_safe=True,
+    maintainer='{maintainer}',
+    maintainer_email='{maintainer_email}',
+    description='{description}',
+    license='Apache-2.0',
+    tests_require=['pytest'],
+    entry_points={{
+        'console_scripts': [
+            '{node_name}={package_name}.{node_name}:main',
+        ],
+    }},
+)
+"""
+        setup_py_path = os.path.join(package_path, "setup.py")
+        with open(setup_py_path, 'w') as f:
+            f.write(setup_py_content)
+        result["files_created"].append(setup_py_path)
+
+        # 3. Create setup.cfg (CRITICAL!)
+        setup_cfg_content = f"""[develop]
+script_dir=$base/lib/{package_name}
+[install]
+install_scripts=$base/lib/{package_name}
+"""
+        setup_cfg_path = os.path.join(package_path, "setup.cfg")
+        with open(setup_cfg_path, 'w') as f:
+            f.write(setup_cfg_content)
+        result["files_created"].append(setup_cfg_path)
+
+        # 4. Create resource marker file
+        resource_path = os.path.join(package_path, "resource", package_name)
+        with open(resource_path, 'w') as f:
+            f.write("")  # Empty file
+        result["files_created"].append(resource_path)
+
+        # 5. Create __init__.py
+        init_path = os.path.join(package_path, package_name, "__init__.py")
+        with open(init_path, 'w') as f:
+            f.write("")  # Empty file
+        result["files_created"].append(init_path)
+
+        # 6. Create template node file
+        node_content = f'''#!/usr/bin/env python3
+"""
+{node_name} - A ROS2 node.
+
+This is a template node created by Simbo.
+"""
+
+import rclpy
+from rclpy.node import Node
+
+
+class {node_name.title().replace("_", "")}Node(Node):
+    """A ROS2 node."""
+
+    def __init__(self):
+        super().__init__('{node_name}')
+        self.get_logger().info('{node_name} node started')
+
+        # TODO: Add your node logic here
+        # Example timer:
+        # self.timer = self.create_timer(1.0, self.timer_callback)
+
+        # Example publisher:
+        # self.publisher = self.create_publisher(String, 'topic_name', 10)
+
+        # Example subscriber:
+        # self.subscription = self.create_subscription(
+        #     String, 'topic_name', self.listener_callback, 10)
+
+    def timer_callback(self):
+        """Timer callback - called periodically."""
+        pass
+
+
+def main(args=None):
+    """Main entry point."""
+    rclpy.init(args=args)
+    node = {node_name.title().replace("_", "")}Node()
+
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
+'''
+        node_path = os.path.join(package_path, package_name, f"{node_name}.py")
+        with open(node_path, 'w') as f:
+            f.write(node_content)
+        result["files_created"].append(node_path)
+
+        result["success"] = True
+
+    except Exception as e:
+        result["errors"].append(f"Error creating package: {str(e)}")
+
+    return result
+
+
+@tool
 def check_executable_configuration(
     workspace_path: str,
     node_file: str,
@@ -539,13 +880,18 @@ def check_executable_configuration(
 ) -> Dict[str, any]:
     """
     Check if a ROS node file has proper executable configuration.
-    This is a high-level validation that checks both entry points (ROS2) and permissions (ROS1).
-    
+    This is a high-level validation that checks entry points, setup.cfg (ROS2), and permissions (ROS1).
+
+    For ROS2 Python packages, THREE things are required:
+    1. Entry points in setup.py (console_scripts)
+    2. setup.cfg with install_scripts pointing to lib/<package_name>/
+    3. The node file must exist in the package
+
     Args:
         workspace_path: Path to the ROS workspace
         node_file: Path to the Python node file
         ros_version: Either "ros1" or "ros2"
-    
+
     Returns:
         Dictionary with validation results, errors, and fix suggestions
     """
@@ -557,57 +903,79 @@ def check_executable_configuration(
         "warnings": [],
         "fix_suggestions": []
     }
-    
+
     if not os.path.exists(node_file):
         result["errors"].append(f"Node file not found: {node_file}")
         return result
-    
+
     if ros_version == "ros2":
-        # For ROS2, check entry points in setup.py
+        # For ROS2, check entry points in setup.py AND setup.cfg
         # Find package directory containing this node
         current_dir = os.path.dirname(node_file)
         package_dir = None
-        
+
         # Walk up to find package.xml or setup.py
         while current_dir != workspace_path and current_dir != "/":
             if os.path.exists(os.path.join(current_dir, "package.xml")):
                 package_dir = current_dir
                 break
             current_dir = os.path.dirname(current_dir)
-        
+
         if not package_dir:
             result["errors"].append(f"Could not find package directory for {node_file}")
             result["warnings"].append("Node might not be in a proper ROS package")
             return result
-        
-        # Check entry points
+
+        entry_points_valid = False
+        setup_cfg_valid = False
+
+        # Check 1: Entry points in setup.py
         node_name = os.path.splitext(os.path.basename(node_file))[0]
         entry_point_result = check_ros2_entry_points.invoke({
             "package_path": package_dir,
             "node_name": node_name,
             "node_file": node_file
         })
-        
+
         if entry_point_result.get("errors"):
             result["errors"].extend(entry_point_result["errors"])
-        
+
         if entry_point_result.get("missing_entry_points"):
-            result["is_valid"] = False
             result["errors"].append(
                 f"Missing entry point for node '{node_name}' in setup.py"
             )
             if entry_point_result.get("suggestions"):
                 result["fix_suggestions"].extend(entry_point_result["suggestions"])
         elif entry_point_result.get("has_entry_points"):
-            result["is_valid"] = True
-    
+            entry_points_valid = True
+
+        # Check 2: setup.cfg exists and is properly configured
+        setup_cfg_result = check_setup_cfg.invoke({"package_path": package_dir})
+
+        if not setup_cfg_result.get("exists"):
+            result["errors"].append(
+                f"CRITICAL: setup.cfg missing in {package_dir}. "
+                "Without this file, ros2 run will fail with 'No executable found'."
+            )
+            result["fix_suggestions"].append(
+                f"Create setup.cfg in {package_dir} with content:\n{setup_cfg_result.get('correct_content', '')}"
+            )
+        elif not setup_cfg_result.get("is_valid"):
+            result["errors"].extend(setup_cfg_result.get("errors", []))
+            result["fix_suggestions"].extend(setup_cfg_result.get("fix_suggestions", []))
+        else:
+            setup_cfg_valid = True
+
+        # Both must be valid for ROS2
+        result["is_valid"] = entry_points_valid and setup_cfg_valid
+
     elif ros_version == "ros1":
         # For ROS1, check if script is executable
         exec_result = check_python_script_executable.invoke({"script_path": node_file})
-        
+
         if exec_result.get("error"):
             result["errors"].append(exec_result["error"])
-        
+
         if not exec_result.get("is_executable"):
             result["is_valid"] = False
             result["errors"].append(f"Python script is not executable: {node_file}")
@@ -615,8 +983,8 @@ def check_executable_configuration(
                 result["fix_suggestions"].append(exec_result["fix_command"])
         else:
             result["is_valid"] = True
-    
+
     else:
         result["errors"].append(f"Unknown ROS version: {ros_version}")
-    
+
     return result

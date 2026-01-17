@@ -34,6 +34,9 @@ from ..tools.workspace_tools import (
     check_ros2_entry_points,
     check_python_script_executable,
     check_executable_configuration,
+    check_setup_cfg,
+    create_setup_cfg,
+    create_ros2_python_package,
 )
 from ..tools.file_tools import (
     read_file,
@@ -173,17 +176,73 @@ DO NOT mark tasks complete based on text descriptions alone. Only mark complete 
 - Report what files you created/modified to the user
 - Summarize errors and progress concisely
 
-## Code Style
+## Code Style - PYTHON ONLY
 
-For ROS2 Python:
+**IMPORTANT: ALWAYS use Python for ROS2 packages. DO NOT create C/C++ packages or CMakeLists.txt files.**
+
+For ROS2 Python packages (ament_python):
 - Use rclpy for node creation
 - Follow ROS2 naming conventions
 - Include proper type hints
 - Add docstrings
-- **CRITICAL**: All Python nodes MUST be registered in setup.py with entry_points
-  - Example: entry_points={{'console_scripts': ['control_panel_node=package_name.control_panel_node:main']}}
-  - The module path should be relative to the package (package_name.module_name:function_name)
-  - Without this, ros2 run will fail with "No executable found"
+
+**CRITICAL: ROS2 Python Package Structure (ament_python)**
+
+A ROS2 Python package requires EXACTLY these files (NO CMakeLists.txt!):
+
+```
+<package_name>/
+├── package.xml           # Package metadata with <build_type>ament_python</build_type>
+├── setup.py              # Python package setup with entry_points
+├── setup.cfg             # CRITICAL: Install script location
+├── resource/<package_name>  # Empty marker file for ament
+└── <package_name>/       # Python module directory (same name as package)
+    ├── __init__.py       # Makes it a Python module
+    └── <node_name>.py    # Your node files
+```
+
+**File Requirements:**
+
+1. **package.xml** - MUST contain:
+   ```xml
+   <build_type>ament_python</build_type>
+   ```
+   DO NOT include ament_cmake or any CMake dependencies!
+
+2. **setup.py** - MUST have entry_points:
+   ```python
+   entry_points={{
+       'console_scripts': [
+           'node_name=package_name.module_name:main',
+       ],
+   }},
+   ```
+
+3. **setup.cfg** (MANDATORY - most commonly forgotten!):
+   ```
+   [develop]
+   script_dir=$base/lib/<package_name>
+   [install]
+   install_scripts=$base/lib/<package_name>
+   ```
+   - This tells colcon WHERE to install executables
+   - Without it, executables go to bin/ instead of lib/<package_name>/
+   - ros2 run expects executables at lib/<package_name>/, so it WILL FAIL without this!
+   - **ALWAYS use create_setup_cfg tool** after creating a new package
+
+4. **resource/<package_name>** - Empty marker file required by ament
+
+5. **<package_name>/__init__.py** - Empty file to make it a Python module
+
+**DO NOT CREATE:**
+- CMakeLists.txt (this is for C/C++ packages only!)
+- Any .cpp, .c, .h, or .hpp files
+- ament_cmake dependencies in package.xml
+
+**ALWAYS:**
+- Use create_setup_cfg tool after creating a new package
+- Use check_setup_cfg to verify setup.cfg exists and is correct
+- Verify package.xml has <build_type>ament_python</build_type>
 
 For ROS1 Python:
 - Use rospy for node creation
@@ -291,6 +350,9 @@ class SimulationAgent:
             check_ros2_entry_points,
             check_python_script_executable,
             check_executable_configuration,
+            check_setup_cfg,
+            create_setup_cfg,
+            create_ros2_python_package,
             # File operations
             read_file,
             write_file,
