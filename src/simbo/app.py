@@ -1,13 +1,18 @@
 """
 Simbo - Streamlit UI for the ROS/Gazebo Simulation Assistant.
 
+This UI shows real-time progress as the autonomous agent works,
+including file changes, tool executions, and final results.
+
 Run with: streamlit run src/simbo/app.py
 """
 
 import os
+import time
 import streamlit as st
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
+from datetime import datetime
 
 from dotenv import load_dotenv
 
@@ -27,7 +32,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS
+# Custom CSS for better UI
 st.markdown("""
 <style>
     .main-header {
@@ -41,42 +46,39 @@ st.markdown("""
         color: #666;
         margin-bottom: 2rem;
     }
-    .workspace-info {
-        background-color: #f0f2f6;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        margin-bottom: 1rem;
-    }
-    .code-block {
+    .tool-execution {
         background-color: #1e1e1e;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        font-family: monospace;
+        color: #d4d4d4;
+        padding: 0.5rem 1rem;
+        border-radius: 0.25rem;
+        font-family: 'Consolas', 'Monaco', monospace;
+        font-size: 0.85rem;
+        margin: 0.25rem 0;
     }
-    .status-badge {
+    .file-created {
+        background-color: #1b4332;
+        color: #95d5b2;
         padding: 0.25rem 0.5rem;
         border-radius: 0.25rem;
-        font-size: 0.8rem;
-        font-weight: bold;
+        font-size: 0.85rem;
     }
-    .status-connected {
-        background-color: #4CAF50;
+    .file-modified {
+        background-color: #3d2914;
+        color: #f9c74f;
+        padding: 0.25rem 0.5rem;
+        border-radius: 0.25rem;
+        font-size: 0.85rem;
+    }
+    .iteration-badge {
+        background-color: #4361ee;
         color: white;
+        padding: 0.1rem 0.4rem;
+        border-radius: 0.25rem;
+        font-size: 0.75rem;
     }
-    .status-disconnected {
-        background-color: #f44336;
-        color: white;
-    }
-    .chat-message {
-        padding: 1rem;
-        border-radius: 0.5rem;
-        margin-bottom: 0.5rem;
-    }
-    .user-message {
-        background-color: #e3f2fd;
-    }
-    .assistant-message {
-        background-color: #f5f5f5;
+    .thinking-indicator {
+        color: #888;
+        font-style: italic;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -84,35 +86,32 @@ st.markdown("""
 
 def init_session_state():
     """Initialize session state variables."""
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+    defaults = {
+        "messages": [],
+        "workspace_path": "",
+        "workspace_info": None,
+        "agent": None,
+        "api_key": os.getenv("OPENAI_API_KEY", ""),
+        "model": "gpt-4-turbo-preview",
+        "thread_id": f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        "files_created": [],
+        "files_modified": [],
+        "is_processing": False,
+    }
 
-    if "workspace_path" not in st.session_state:
-        st.session_state.workspace_path = ""
-
-    if "workspace_info" not in st.session_state:
-        st.session_state.workspace_info = None
-
-    if "agent" not in st.session_state:
-        st.session_state.agent = None
-
-    if "api_key" not in st.session_state:
-        st.session_state.api_key = os.getenv("OPENAI_API_KEY", "")
-
-    if "model" not in st.session_state:
-        st.session_state.model = "gpt-4-turbo-preview"
-
-    if "is_analyzing" not in st.session_state:
-        st.session_state.is_analyzing = False
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
 
-def initialize_agent():
+def initialize_agent() -> bool:
     """Initialize or reinitialize the agent."""
     if st.session_state.api_key:
         try:
             st.session_state.agent = create_simulation_graph(
                 model_name=st.session_state.model,
-                api_key=st.session_state.api_key
+                api_key=st.session_state.api_key,
+                max_iterations=25
             )
             return True
         except Exception as e:
@@ -127,16 +126,11 @@ def analyze_workspace_ui(workspace_path: str) -> Optional[WorkspaceInfo]:
         return None
 
     try:
-        # Detect ROS version
         ros_info = detect_ros_version.invoke({"workspace_path": workspace_path})
-
-        # Analyze workspace
         analysis = analyze_workspace.invoke({"workspace_path": workspace_path})
-
-        # List packages
         packages = list_packages.invoke({"workspace_path": workspace_path})
 
-        workspace_info = WorkspaceInfo(
+        return WorkspaceInfo(
             path=workspace_path,
             ros_version=ros_info.get("ros_version", "unknown"),
             ros_distro=ros_info.get("ros_distro", "unknown"),
@@ -146,9 +140,6 @@ def analyze_workspace_ui(workspace_path: str) -> Optional[WorkspaceInfo]:
             launch_files=analysis.get("launch_files", []),
             is_analyzed=True
         )
-
-        return workspace_info
-
     except Exception as e:
         st.error(f"Error analyzing workspace: {e}")
         return None
@@ -173,7 +164,7 @@ def render_sidebar():
         # Model selection
         model = st.selectbox(
             "Model",
-            ["gpt-4-turbo-preview", "gpt-4", "gpt-3.5-turbo"],
+            ["gpt-4-turbo-preview", "gpt-4o", "gpt-4", "gpt-3.5-turbo"],
             index=0,
             help="Select the OpenAI model to use"
         )
@@ -196,10 +187,9 @@ def render_sidebar():
         col1, col2 = st.columns(2)
 
         with col1:
-            if st.button("📂 Browse", use_container_width=True):
-                # Note: Streamlit doesn't have a native folder picker
-                # Users need to enter the path manually
-                st.info("Please enter the path manually")
+            if st.button("📂 Set Path", use_container_width=True):
+                if workspace_path:
+                    st.session_state.workspace_path = workspace_path
 
         with col2:
             analyze_clicked = st.button(
@@ -219,171 +209,259 @@ def render_sidebar():
             st.success("Workspace analyzed!")
 
             st.markdown("### Environment")
-            st.markdown(f"**ROS Version:** {info.ros_version}")
-            st.markdown(f"**Distribution:** {info.ros_distro}")
+            st.markdown(f"**ROS:** {info.ros_version} ({info.ros_distro})")
             st.markdown(f"**Gazebo:** {info.gazebo_version}")
 
             st.markdown("### Packages")
             if info.packages:
-                for pkg in info.packages[:10]:
+                for pkg in info.packages[:8]:
                     st.markdown(f"- `{pkg}`")
-                if len(info.packages) > 10:
-                    st.markdown(f"*... and {len(info.packages) - 10} more*")
+                if len(info.packages) > 8:
+                    st.markdown(f"*+{len(info.packages) - 8} more*")
             else:
                 st.markdown("*No packages found*")
 
-            st.markdown("### Statistics")
-            total_files = sum(len(files) for files in info.source_files.values())
-            st.markdown(f"- **Source files:** {total_files}")
-            st.markdown(f"- **Launch files:** {len(info.launch_files)}")
-
         st.divider()
 
-        # Clear chat button
-        if st.button("🗑️ Clear Chat", use_container_width=True):
-            st.session_state.messages = []
-            st.rerun()
+        # Files changed in this session
+        if st.session_state.files_created or st.session_state.files_modified:
+            st.markdown("## 📝 Files Changed")
 
-        # Help section
-        with st.expander("❓ Help"):
-            st.markdown("""
-            **Getting Started:**
-            1. Enter your OpenAI API key
-            2. Set your ROS workspace path
-            3. Click "Analyze" to scan your workspace
-            4. Start chatting with Simbo!
+            if st.session_state.files_created:
+                st.markdown("**Created:**")
+                for f in st.session_state.files_created[-5:]:
+                    st.markdown(f'<span class="file-created">+ {os.path.basename(f)}</span>',
+                                unsafe_allow_html=True)
 
-            **Example Commands:**
-            - "Generate a velocity controller for my robot"
-            - "Create a position controller with PID"
-            - "Show me the launch files"
-            - "Explain this controller code"
-            - "Help me debug my simulation"
-            """)
+            if st.session_state.files_modified:
+                st.markdown("**Modified:**")
+                for f in st.session_state.files_modified[-5:]:
+                    st.markdown(f'<span class="file-modified">~ {os.path.basename(f)}</span>',
+                                unsafe_allow_html=True)
+
+            st.divider()
+
+        # Actions
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🗑️ Clear Chat", use_container_width=True):
+                st.session_state.messages = []
+                st.session_state.files_created = []
+                st.session_state.files_modified = []
+                st.rerun()
+
+        with col2:
+            if st.button("🔄 New Session", use_container_width=True):
+                st.session_state.thread_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                st.session_state.messages = []
+                st.rerun()
+
+
+def extract_tool_info(message) -> List[Dict[str, Any]]:
+    """Extract tool call information from a message."""
+    tools_used = []
+
+    if hasattr(message, 'tool_calls') and message.tool_calls:
+        for tool_call in message.tool_calls:
+            tool_info = {
+                "name": tool_call.get("name", "unknown"),
+                "args": tool_call.get("args", {}),
+            }
+            tools_used.append(tool_info)
+
+    return tools_used
+
+
+def format_tool_execution(tool_name: str, args: Dict) -> str:
+    """Format tool execution for display."""
+    # Simplify display based on tool type
+    if tool_name == "write_file":
+        return f"📝 Writing file: {args.get('file_path', 'unknown')}"
+    elif tool_name == "edit_file":
+        return f"✏️ Editing file: {args.get('file_path', 'unknown')}"
+    elif tool_name == "read_file":
+        return f"📖 Reading: {args.get('file_path', 'unknown')}"
+    elif tool_name == "run_command":
+        cmd = args.get('command', '')
+        return f"⚡ Running: {cmd[:60]}..." if len(cmd) > 60 else f"⚡ Running: {cmd}"
+    elif tool_name == "search_in_files":
+        return f"🔍 Searching for: {args.get('pattern', 'unknown')}"
+    elif tool_name == "list_directory":
+        return f"📂 Listing: {args.get('dir_path', 'unknown')}"
+    elif tool_name == "create_directory":
+        return f"📁 Creating directory: {args.get('dir_path', 'unknown')}"
+    elif tool_name == "build_ros_workspace":
+        return f"🔨 Building workspace..."
+    elif tool_name in ["detect_ros_version", "analyze_workspace", "list_packages"]:
+        return f"🔍 Analyzing workspace..."
+    else:
+        return f"🔧 {tool_name}"
+
+
+def render_agent_response_streaming(prompt: str, status_container, response_container):
+    """Stream the agent's response with real-time updates."""
+
+    if not st.session_state.agent:
+        if not initialize_agent():
+            st.error("Please configure your OpenAI API key in the sidebar.")
+            return None
+
+    workspace_path = st.session_state.workspace_path if st.session_state.workspace_path else None
+
+    try:
+        iteration_count = 0
+        final_response = ""
+        tools_executed = []
+        processed_message_count = 0  # Track how many messages we've already processed
+
+        # Stream the agent's execution
+        for state in st.session_state.agent.stream(
+            user_input=prompt,
+            workspace_path=workspace_path,
+            thread_id=st.session_state.thread_id
+        ):
+            messages = state.get("messages", [])
+            current_iteration = state.get("iteration_count", 0)
+
+            # Update iteration count
+            if current_iteration > iteration_count:
+                iteration_count = current_iteration
+                status_container.markdown(
+                    f'<span class="iteration-badge">Step {iteration_count}</span>',
+                    unsafe_allow_html=True
+                )
+
+            # Only process NEW messages (ones we haven't seen yet)
+            new_messages = messages[processed_message_count:]
+            processed_message_count = len(messages)
+
+            for msg in new_messages:
+                # Check for tool calls
+                tools_info = extract_tool_info(msg)
+                for tool in tools_info:
+                    tool_display = format_tool_execution(tool["name"], tool["args"])
+                    if tool_display not in tools_executed:
+                        tools_executed.append(tool_display)
+                        status_container.markdown(
+                            f'<div class="tool-execution">{tool_display}</div>',
+                            unsafe_allow_html=True
+                        )
+
+                        # Track file changes
+                        if tool["name"] == "write_file":
+                            file_path = tool["args"].get("file_path", "")
+                            if file_path:
+                                if not os.path.exists(file_path):
+                                    if file_path not in st.session_state.files_created:
+                                        st.session_state.files_created.append(file_path)
+                                else:
+                                    if file_path not in st.session_state.files_modified:
+                                        st.session_state.files_modified.append(file_path)
+
+                        elif tool["name"] == "edit_file":
+                            file_path = tool["args"].get("file_path", "")
+                            if file_path and file_path not in st.session_state.files_modified:
+                                st.session_state.files_modified.append(file_path)
+
+                # Get AI response content (only from new messages)
+                if hasattr(msg, 'content') and msg.content:
+                    is_ai_message = (
+                        (hasattr(msg, 'type') and msg.type == 'ai') or
+                        (hasattr(msg, 'role') and msg.role == 'assistant')
+                    )
+                    if is_ai_message:
+                        # This is a new AI message, use it as the latest response
+                        final_response = msg.content
+                        response_container.markdown(final_response)
+
+        return final_response
+
+    except Exception as e:
+        st.error(f"Error during execution: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
+        return None
 
 
 def render_chat():
-    """Render the chat interface."""
-    # Display chat messages
+    """Render the chat interface with streaming support."""
+
+    # Display chat history
     for message in st.session_state.messages:
         role = message["role"]
         content = message["content"]
 
-        if role == "user":
-            with st.chat_message("user"):
-                st.markdown(content)
-        else:
-            with st.chat_message("assistant"):
-                st.markdown(content)
+        with st.chat_message(role):
+            st.markdown(content)
 
     # Chat input
-    if prompt := st.chat_input("Ask Simbo about your simulation..."):
-        # Check if agent is initialized
-        if not st.session_state.agent:
-            if not initialize_agent():
-                st.error("Please configure your OpenAI API key in the sidebar.")
-                return
-
+    if prompt := st.chat_input("Tell Simbo what you want to build or modify..."):
         # Add user message
         st.session_state.messages.append({"role": "user", "content": prompt})
 
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Generate response
+        # Generate response with streaming
         with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                try:
-                    # Invoke agent
-                    result = st.session_state.agent.invoke(
-                        user_input=prompt,
-                        workspace_path=st.session_state.workspace_path if st.session_state.workspace_path else None
-                    )
+            # Create containers for status and response
+            status_container = st.container()
+            st.markdown("---")
+            response_container = st.container()
 
-                    # Extract response
-                    messages = result.get("messages", [])
-                    response_content = ""
+            with status_container:
+                st.markdown('<p class="thinking-indicator">🤔 Analyzing request...</p>',
+                            unsafe_allow_html=True)
 
-                    for msg in messages:
-                        if hasattr(msg, 'content') and msg.content:
-                            # Check if it's an AI message (not user)
-                            if hasattr(msg, 'type') and msg.type == 'ai':
-                                response_content = msg.content
-                            elif not hasattr(msg, 'type'):
-                                # Handle different message types
-                                response_content = msg.content
+            # Stream the response
+            response = render_agent_response_streaming(
+                prompt,
+                status_container,
+                response_container
+            )
 
-                    if not response_content:
-                        response_content = "I've processed your request. Is there anything specific you'd like me to help you with?"
-
-                    # Check for code in response
-                    if "```" in response_content:
-                        st.markdown(response_content)
-                    else:
-                        st.markdown(response_content)
-
-                    # Add to message history
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": response_content
-                    })
-
-                    # Check if user input is needed
-                    if result.get("needs_user_input") and result.get("user_question"):
-                        st.info(result["user_question"])
-
-                except Exception as e:
-                    error_msg = f"Error: {str(e)}"
-                    st.error(error_msg)
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": error_msg
-                    })
+            if response:
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": response
+                })
+            else:
+                fallback = "I encountered an issue processing your request. Please try again."
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": fallback
+                })
 
 
 def render_quick_actions():
     """Render quick action buttons."""
-    st.markdown("### Quick Actions")
+    st.markdown("### 🚀 Quick Actions")
 
     col1, col2, col3, col4 = st.columns(4)
 
-    with col1:
-        if st.button("🎮 Velocity Controller", use_container_width=True):
-            prompt = "Generate a velocity controller for my robot that subscribes to cmd_vel and publishes to the appropriate topics."
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            st.rerun()
+    actions = [
+        ("🎮 Velocity Controller", "Create a velocity controller node for my robot that subscribes to cmd_vel topic and controls the robot's movement. Write the actual file to my workspace."),
+        ("📍 Position Controller", "Create a position controller that uses PID control to move the robot to goal positions. Write the actual code file to my workspace."),
+        ("🦾 Joint Controller", "Create a joint trajectory controller for controlling robot manipulator joints. Write the code to my workspace."),
+        ("⌨️ Teleop Node", "Create a keyboard teleop node for manual robot control. Write it to my workspace."),
+    ]
 
-    with col2:
-        if st.button("📍 Position Controller", use_container_width=True):
-            prompt = "Generate a position controller that moves the robot to a goal position using PID control."
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            st.rerun()
-
-    with col3:
-        if st.button("🦾 Joint Controller", use_container_width=True):
-            prompt = "Generate a joint trajectory controller for controlling robot arm joints."
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            st.rerun()
-
-    with col4:
-        if st.button("⌨️ Teleop Controller", use_container_width=True):
-            prompt = "Generate a keyboard teleop controller for manually controlling the robot."
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            st.rerun()
+    for col, (label, prompt) in zip([col1, col2, col3, col4], actions):
+        with col:
+            if st.button(label, use_container_width=True):
+                st.session_state.messages.append({"role": "user", "content": prompt})
+                st.rerun()
 
 
 def main():
     """Main application entry point."""
-    # Initialize session state
     init_session_state()
-
-    # Render sidebar
     render_sidebar()
 
-    # Main content
+    # Header
     st.markdown('<p class="main-header">🤖 Simbo</p>', unsafe_allow_html=True)
     st.markdown(
-        '<p class="sub-header">Your AI Assistant for ROS/Gazebo Simulation Development</p>',
+        '<p class="sub-header">Autonomous AI Assistant for ROS/Gazebo Simulation Development</p>',
         unsafe_allow_html=True
     )
 
@@ -392,31 +470,39 @@ def main():
 
     with col1:
         if st.session_state.api_key:
-            st.success("🔑 API Key Configured")
+            st.success("🔑 API Key Set")
         else:
-            st.warning("🔑 API Key Required")
+            st.error("🔑 API Key Required")
 
     with col2:
-        if st.session_state.workspace_info:
-            st.success(f"📁 Workspace: {st.session_state.workspace_info.ros_version}")
+        if st.session_state.workspace_path:
+            st.success(f"📁 {os.path.basename(st.session_state.workspace_path)}")
         else:
-            st.info("📁 No Workspace Set")
+            st.warning("📁 Set Workspace Path")
 
     with col3:
-        if st.session_state.agent:
-            st.success(f"🧠 Model: {st.session_state.model}")
-        else:
-            st.info("🧠 Agent Not Initialized")
+        st.info(f"🧠 {st.session_state.model}")
 
     st.divider()
 
-    # Quick actions
-    if st.session_state.workspace_info:
+    # Quick actions (only if workspace is set)
+    if st.session_state.workspace_path:
         render_quick_actions()
         st.divider()
 
-    # Chat interface
+    # Main chat interface
     render_chat()
+
+    # Footer hint
+    if not st.session_state.messages:
+        st.markdown("""
+        ---
+        **💡 Tips:**
+        - Set your ROS workspace path in the sidebar first
+        - Ask Simbo to create controllers, launch files, or any ROS code
+        - Simbo will directly write files to your workspace
+        - Watch the real-time progress as Simbo works on your request
+        """)
 
 
 if __name__ == "__main__":

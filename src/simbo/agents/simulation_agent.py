@@ -1,25 +1,28 @@
 """
-Simulation Agent - Main LangGraph-based agent for Simbo.
+Simulation Agent - Autonomous LangGraph-based agent for Simbo.
 
-This agent handles the complete workflow:
-1. User prompt processing
-2. Workspace detection and analysis
-3. Environment learning
-4. Code generation
-5. Feedback loop
+This agent behaves like Cursor/Claude Code - it autonomously:
+1. Analyzes the user's request
+2. Explores the codebase
+3. Plans the implementation
+4. Writes/edits files directly
+5. Runs commands to verify
+6. Iterates until the task is complete
 """
 
 import os
-from typing import Dict, List, Optional, Literal, Any
-from pydantic import BaseModel, Field
+from typing import Dict, List, Optional, Any, Annotated, Sequence, TypedDict
+from datetime import datetime
 
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage, BaseMessage
+from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, END
+from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
+from langgraph.checkpoint.memory import MemorySaver
 
-from ..utils.state import AgentState, WorkspaceInfo
+from ..utils.state import WorkspaceInfo
 from ..tools.workspace_tools import (
     detect_ros_version,
     analyze_workspace,
@@ -28,61 +31,129 @@ from ..tools.workspace_tools import (
     find_launch_files,
     find_source_files,
 )
-from ..tools.code_tools import (
+from ..tools.file_tools import (
     read_file,
     write_file,
-    search_code,
-    generate_controller,
+    edit_file,
+    insert_at_line,
+    delete_lines,
+    create_directory,
+    list_directory,
+    search_in_files,
+    copy_file,
+    delete_file,
+)
+from ..tools.shell_tools import (
+    run_command,
+    run_ros_command,
+    build_ros_workspace,
+    check_ros_topics,
+    check_ros_nodes,
+    get_topic_info,
+    get_message_type,
 )
 
 
-# System prompt for the simulation agent
-SYSTEM_PROMPT = """You are Simbo, an expert AI assistant for ROS/Gazebo robotics simulation development.
+# System prompt that makes the agent behave autonomously like Cursor
+SYSTEM_PROMPT = """You are Simbo, an autonomous AI assistant for ROS/Gazebo robotics simulation development.
 
-Your capabilities include:
-1. Analyzing ROS workspaces (both ROS1 and ROS2)
-2. Understanding existing robot simulations and code
-3. Generating control programs for robots
-4. Creating launch files and configuration
-5. Helping debug simulation issues
+You work like Cursor or Claude Code - you don't just give advice, you DIRECTLY MODIFY the user's code and files to accomplish their goals.
 
-Current workspace information:
-{workspace_info}
+## Your Capabilities
+- Read and analyze existing code in the workspace
+- Write new files (controllers, launch files, configs)
+- Edit existing files to add features or fix issues
+- Run shell commands to build, test, and verify
+- Execute ROS commands to check topics, nodes, etc.
 
-Guidelines:
-- Always analyze the user's workspace before making suggestions
-- Generate code that follows ROS best practices
-- Explain your reasoning and the code you generate
-- Ask clarifying questions when requirements are unclear
-- Provide complete, runnable code solutions
-- Consider both ROS1 and ROS2 compatibility based on the detected environment
+## Current Workspace
+Path: {workspace_path}
+ROS Version: {ros_version}
+ROS Distribution: {ros_distro}
+Packages: {packages}
 
-When generating controllers:
-- Use appropriate message types for the ROS version
-- Include proper error handling
-- Add helpful comments and documentation
-- Make parameters configurable
+## How You Work
 
-Current stage: {stage}
+1. **ANALYZE**: First, explore the codebase to understand the existing structure
+   - Use read_file to examine relevant files
+   - Use search_in_files to find related code
+   - Use list_directory to understand project structure
+
+2. **PLAN**: Mentally plan what changes need to be made
+
+3. **IMPLEMENT**: Make the actual changes
+   - Use write_file to create new files
+   - Use edit_file to modify existing files
+   - Create proper directory structure with create_directory
+
+4. **VERIFY**: Check that changes are correct
+   - Use run_command to build the workspace
+   - Use run_ros_command to test ROS functionality
+   - Read back files to verify changes
+
+5. **ITERATE**: If something fails, fix it and try again
+
+## Important Rules
+
+- ALWAYS read a file before editing it
+- ALWAYS use absolute paths
+- ALWAYS verify changes were applied correctly
+- If a build fails, analyze the error and fix it
+- Keep iterating until the task is COMPLETE
+- Report what files you created/modified to the user
+
+## Code Style
+
+For ROS2 Python:
+- Use rclpy for node creation
+- Follow ROS2 naming conventions
+- Include proper type hints
+- Add docstrings
+
+For ROS1 Python:
+- Use rospy for node creation
+- Follow ROS1 conventions
+
+When you complete a task, summarize:
+1. What files were created/modified
+2. How to use the new code
+3. Any additional steps the user needs to take
+
+NOW: Analyze the user's request and start implementing. Don't just describe what to do - DO IT.
 """
 
 
+class AgentState(TypedDict):
+    """State for the autonomous simulation agent."""
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+    workspace_path: str
+    workspace_info: Optional[Dict[str, Any]]
+    iteration_count: int
+    max_iterations: int
+    files_modified: List[str]
+    files_created: List[str]
+    task_complete: bool
+    error: Optional[str]
+
+
 class SimulationAgent:
-    """Main simulation agent using LangGraph."""
+    """Autonomous simulation agent that directly modifies user's code."""
 
     def __init__(
         self,
         model_name: str = "gpt-4-turbo-preview",
         temperature: float = 0.1,
-        api_key: Optional[str] = None
+        api_key: Optional[str] = None,
+        max_iterations: int = 25
     ):
         """
-        Initialize the simulation agent.
+        Initialize the autonomous simulation agent.
 
         Args:
             model_name: OpenAI model to use
-            temperature: Model temperature for generation
-            api_key: OpenAI API key (or set OPENAI_API_KEY env var)
+            temperature: Model temperature
+            api_key: OpenAI API key
+            max_iterations: Maximum iterations before stopping
         """
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         if not self.api_key:
@@ -94,18 +165,36 @@ class SimulationAgent:
             api_key=self.api_key
         )
 
-        # Define tools
+        self.max_iterations = max_iterations
+
+        # All available tools
         self.tools = [
+            # Workspace analysis
             detect_ros_version,
             analyze_workspace,
             list_packages,
             read_package_xml,
             find_launch_files,
             find_source_files,
+            # File operations
             read_file,
             write_file,
-            search_code,
-            generate_controller,
+            edit_file,
+            insert_at_line,
+            delete_lines,
+            create_directory,
+            list_directory,
+            search_in_files,
+            copy_file,
+            delete_file,
+            # Shell operations
+            run_command,
+            run_ros_command,
+            build_ros_workspace,
+            check_ros_topics,
+            check_ros_nodes,
+            get_topic_info,
+            get_message_type,
         ]
 
         # Bind tools to LLM
@@ -115,345 +204,291 @@ class SimulationAgent:
         self.graph = self._build_graph()
 
     def _build_graph(self) -> StateGraph:
-        """Build the LangGraph workflow."""
+        """Build the LangGraph workflow with autonomous loop."""
 
-        # Create the graph
         workflow = StateGraph(AgentState)
 
         # Add nodes
-        workflow.add_node("process_input", self._process_input)
-        workflow.add_node("check_workspace", self._check_workspace)
-        workflow.add_node("analyze_environment", self._analyze_environment)
-        workflow.add_node("generate_response", self._generate_response)
-        workflow.add_node("execute_tools", ToolNode(self.tools))
-        workflow.add_node("handle_feedback", self._handle_feedback)
-        workflow.add_node("ask_user", self._ask_user)
+        workflow.add_node("agent", self._agent_node)
+        workflow.add_node("tools", ToolNode(self.tools))
+        workflow.add_node("check_completion", self._check_completion)
 
         # Set entry point
-        workflow.set_entry_point("process_input")
+        workflow.set_entry_point("agent")
 
-        # Add edges
+        # Add edges - the key is the loop back to agent after tools
         workflow.add_conditional_edges(
-            "process_input",
-            self._route_after_input,
+            "agent",
+            self._should_continue,
             {
-                "check_workspace": "check_workspace",
-                "generate_response": "generate_response",
-                "ask_user": "ask_user",
-            }
-        )
-
-        workflow.add_conditional_edges(
-            "check_workspace",
-            self._route_after_workspace_check,
-            {
-                "analyze_environment": "analyze_environment",
-                "ask_user": "ask_user",
-            }
-        )
-
-        workflow.add_edge("analyze_environment", "generate_response")
-
-        workflow.add_conditional_edges(
-            "generate_response",
-            self._route_after_response,
-            {
-                "execute_tools": "execute_tools",
-                "handle_feedback": "handle_feedback",
+                "tools": "tools",
+                "check_completion": "check_completion",
                 "end": END,
             }
         )
 
+        # After tools, always go back to agent (this creates the agentic loop)
+        workflow.add_edge("tools", "agent")
+
+        # After checking completion, either continue or end
         workflow.add_conditional_edges(
-            "execute_tools",
-            self._route_after_tools,
+            "check_completion",
+            self._completion_router,
             {
-                "generate_response": "generate_response",
+                "continue": "agent",
                 "end": END,
             }
         )
 
-        workflow.add_edge("handle_feedback", "generate_response")
-        workflow.add_edge("ask_user", END)
+        # Use memory saver for checkpointing
+        memory = MemorySaver()
 
-        return workflow.compile()
+        return workflow.compile(checkpointer=memory)
 
-    def _process_input(self, state: AgentState) -> AgentState:
-        """Process user input and determine intent."""
-        messages = state.get("messages", [])
-        if not messages:
-            return state
+    def _get_system_message(self, state: AgentState) -> SystemMessage:
+        """Generate system message with current workspace context."""
+        workspace_info = state.get("workspace_info", {})
 
-        last_message = messages[-1]
-        content = last_message.content if hasattr(last_message, 'content') else str(last_message)
-
-        # Determine intent from message
-        intent_keywords = {
-            "workspace": ["workspace", "directory", "folder", "path", "setup"],
-            "analyze": ["analyze", "understand", "learn", "explore", "show"],
-            "generate": ["generate", "create", "write", "make", "build", "controller", "code"],
-            "help": ["help", "how", "what", "explain"],
-            "feedback": ["feedback", "change", "modify", "update", "fix"],
-        }
-
-        detected_intent = "general"
-        content_lower = content.lower()
-
-        for intent, keywords in intent_keywords.items():
-            if any(kw in content_lower for kw in keywords):
-                detected_intent = intent
-                break
-
-        return {
-            **state,
-            "current_intent": detected_intent,
-            "error": None,
-        }
-
-    def _check_workspace(self, state: AgentState) -> AgentState:
-        """Check if workspace is set and valid."""
-        workspace = state.get("workspace")
-
-        if workspace and workspace.path and os.path.exists(workspace.path):
-            return {
-                **state,
-                "needs_user_input": False,
-            }
-
-        return {
-            **state,
-            "needs_user_input": True,
-            "user_question": "Please provide the path to your ROS workspace (e.g., ~/catkin_ws or ~/ros2_ws):",
-            "stage": "workspace_setup",
-        }
-
-    def _analyze_environment(self, state: AgentState) -> AgentState:
-        """Analyze the ROS workspace environment."""
-        workspace = state.get("workspace")
-        if not workspace or not workspace.path:
-            return state
-
-        workspace_path = workspace.path
-
-        # Detect ROS version
-        ros_info = detect_ros_version.invoke({"workspace_path": workspace_path})
-
-        # Analyze workspace
-        analysis = analyze_workspace.invoke({"workspace_path": workspace_path})
-
-        # List packages
-        packages = list_packages.invoke({"workspace_path": workspace_path})
-
-        # Update workspace info
-        updated_workspace = WorkspaceInfo(
-            path=workspace_path,
-            ros_version=ros_info.get("ros_version", "unknown"),
-            ros_distro=ros_info.get("ros_distro", "unknown"),
-            gazebo_version=ros_info.get("gazebo_version", "unknown"),
-            packages=[p["name"] for p in packages] if packages else [],
-            source_files=analysis.get("source_files", {}),
-            launch_files=analysis.get("launch_files", []),
-            is_analyzed=True
-        )
-
-        # Add analysis summary to messages
-        analysis_summary = f"""
-Workspace Analysis Complete:
-- Path: {workspace_path}
-- ROS Version: {updated_workspace.ros_version}
-- ROS Distribution: {updated_workspace.ros_distro}
-- Gazebo Version: {updated_workspace.gazebo_version}
-- Packages Found: {len(updated_workspace.packages)}
-  {', '.join(updated_workspace.packages[:5])}{'...' if len(updated_workspace.packages) > 5 else ''}
-- Launch Files: {len(updated_workspace.launch_files)}
-- Source Files: {sum(len(files) for files in updated_workspace.source_files.values())} total
-"""
-
-        messages = list(state.get("messages", []))
-        messages.append(AIMessage(content=analysis_summary))
-
-        return {
-            **state,
-            "workspace": updated_workspace,
-            "messages": messages,
-            "stage": "analysis",
-        }
-
-    def _generate_response(self, state: AgentState) -> AgentState:
-        """Generate response using LLM with tools."""
-        workspace = state.get("workspace")
-        workspace_info = "No workspace configured yet."
-
-        if workspace and workspace.is_analyzed:
-            workspace_info = f"""
-Path: {workspace.path}
-ROS Version: {workspace.ros_version}
-Distribution: {workspace.ros_distro}
-Gazebo: {workspace.gazebo_version}
-Packages: {', '.join(workspace.packages[:10])}
-"""
-
-        # Build system message
-        system_message = SystemMessage(content=SYSTEM_PROMPT.format(
-            workspace_info=workspace_info,
-            stage=state.get("stage", "init")
+        return SystemMessage(content=SYSTEM_PROMPT.format(
+            workspace_path=state.get("workspace_path", "Not set"),
+            ros_version=workspace_info.get("ros_version", "unknown"),
+            ros_distro=workspace_info.get("ros_distro", "unknown"),
+            packages=", ".join(workspace_info.get("packages", [])[:10]) or "None detected"
         ))
 
-        # Get conversation messages
-        messages = [system_message] + list(state.get("messages", []))
+    def _agent_node(self, state: AgentState) -> Dict[str, Any]:
+        """Main agent node that decides what to do next."""
+        messages = list(state.get("messages", []))
 
-        # Generate response
+        # Add system message at the start if not present
+        if not messages or not isinstance(messages[0], SystemMessage):
+            system_msg = self._get_system_message(state)
+            messages = [system_msg] + messages
+
+        # Invoke LLM with tools
         response = self.llm_with_tools.invoke(messages)
 
-        # Update messages
-        updated_messages = list(state.get("messages", []))
-        updated_messages.append(response)
+        # Track files modified/created from tool calls
+        files_modified = list(state.get("files_modified", []))
+        files_created = list(state.get("files_created", []))
+
+        # Increment iteration count
+        iteration_count = state.get("iteration_count", 0) + 1
 
         return {
-            **state,
-            "messages": updated_messages,
-            "stage": "coding" if state.get("current_intent") == "generate" else state.get("stage", "init"),
+            "messages": [response],
+            "iteration_count": iteration_count,
+            "files_modified": files_modified,
+            "files_created": files_created,
         }
 
-    def _handle_feedback(self, state: AgentState) -> AgentState:
-        """Handle user feedback on generated code."""
+    def _should_continue(self, state: AgentState) -> str:
+        """Determine if agent should continue, use tools, or end."""
         messages = state.get("messages", [])
-        feedback_history = list(state.get("feedback_history", []))
+        iteration_count = state.get("iteration_count", 0)
 
-        # Extract last user message as feedback
-        for msg in reversed(messages):
-            if isinstance(msg, HumanMessage):
-                feedback_history.append(msg.content)
-                break
+        # Check max iterations
+        if iteration_count >= state.get("max_iterations", self.max_iterations):
+            return "end"
 
-        return {
-            **state,
-            "feedback_history": feedback_history,
-            "stage": "feedback",
-        }
-
-    def _ask_user(self, state: AgentState) -> AgentState:
-        """Prepare a question for the user."""
-        return {
-            **state,
-            "needs_user_input": True,
-        }
-
-    def _route_after_input(self, state: AgentState) -> str:
-        """Route after processing input."""
-        intent = state.get("current_intent", "general")
-        workspace = state.get("workspace")
-
-        if intent == "workspace" or (not workspace or not workspace.is_analyzed):
-            return "check_workspace"
-
-        if state.get("needs_user_input"):
-            return "ask_user"
-
-        return "generate_response"
-
-    def _route_after_workspace_check(self, state: AgentState) -> str:
-        """Route after checking workspace."""
-        if state.get("needs_user_input"):
-            return "ask_user"
-        return "analyze_environment"
-
-    def _route_after_response(self, state: AgentState) -> str:
-        """Route after generating response."""
-        messages = state.get("messages", [])
+        # Get last message
         if not messages:
             return "end"
 
         last_message = messages[-1]
 
-        # Check if the response has tool calls
-        if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-            return "execute_tools"
+        # If there are tool calls, execute them
+        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            return "tools"
 
-        # Check if waiting for feedback
-        if state.get("pending_code"):
-            return "handle_feedback"
+        # If no tool calls, check if task is complete
+        return "check_completion"
+
+    def _check_completion(self, state: AgentState) -> Dict[str, Any]:
+        """Check if the task appears complete."""
+        messages = state.get("messages", [])
+
+        # Look at the last AI message
+        if messages:
+            last_message = messages[-1]
+            if hasattr(last_message, "content") and last_message.content:
+                content = last_message.content.lower()
+
+                # Check for completion indicators
+                completion_indicators = [
+                    "complete",
+                    "finished",
+                    "done",
+                    "created the",
+                    "implemented",
+                    "here's a summary",
+                    "files created",
+                    "files modified",
+                ]
+
+                if any(ind in content for ind in completion_indicators):
+                    return {"task_complete": True}
+
+        return {"task_complete": False}
+
+    def _completion_router(self, state: AgentState) -> str:
+        """Route based on task completion status."""
+        if state.get("task_complete", False):
+            return "end"
+
+        # If we haven't reached max iterations, continue
+        if state.get("iteration_count", 0) < state.get("max_iterations", self.max_iterations):
+            # But if the last message had no tool calls and wasn't a completion,
+            # we should probably end to avoid loops
+            messages = state.get("messages", [])
+            if messages:
+                last_message = messages[-1]
+                if hasattr(last_message, "tool_calls") and not last_message.tool_calls:
+                    # Agent responded without tools - likely done
+                    return "end"
 
         return "end"
 
-    def _route_after_tools(self, state: AgentState) -> str:
-        """Route after tool execution."""
-        messages = state.get("messages", [])
+    def _analyze_workspace(self, workspace_path: str) -> Dict[str, Any]:
+        """Pre-analyze the workspace before starting."""
+        if not workspace_path or not os.path.exists(workspace_path):
+            return {}
 
-        # Check if there are more tool calls needed
-        if messages:
-            last_message = messages[-1]
-            if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-                return "generate_response"
+        try:
+            ros_info = detect_ros_version.invoke({"workspace_path": workspace_path})
+            packages_info = list_packages.invoke({"workspace_path": workspace_path})
 
-        return "generate_response"
+            return {
+                "ros_version": ros_info.get("ros_version", "unknown"),
+                "ros_distro": ros_info.get("ros_distro", "unknown"),
+                "gazebo_version": ros_info.get("gazebo_version", "unknown"),
+                "packages": [p["name"] for p in packages_info] if packages_info else [],
+            }
+        except Exception as e:
+            return {"error": str(e)}
 
-    def invoke(self, user_input: str, workspace_path: Optional[str] = None) -> Dict[str, Any]:
+    def invoke(
+        self,
+        user_input: str,
+        workspace_path: Optional[str] = None,
+        thread_id: str = "default"
+    ) -> Dict[str, Any]:
         """
-        Invoke the agent with user input.
+        Invoke the agent with a user request.
 
         Args:
-            user_input: User's message/request
-            workspace_path: Optional workspace path to set
+            user_input: User's request/task
+            workspace_path: Path to the ROS workspace
+            thread_id: Thread ID for conversation memory
 
         Returns:
-            Agent state after processing
+            Final state after agent completes
         """
-        # Initialize state
-        workspace = None
+        # Pre-analyze workspace
+        workspace_info = {}
         if workspace_path:
-            workspace = WorkspaceInfo(path=workspace_path)
+            workspace_info = self._analyze_workspace(workspace_path)
 
+        # Initial state
         initial_state: AgentState = {
             "messages": [HumanMessage(content=user_input)],
-            "workspace": workspace,
-            "stage": "init",
-            "current_intent": "",
-            "pending_code": None,
-            "feedback_history": [],
+            "workspace_path": workspace_path or "",
+            "workspace_info": workspace_info,
+            "iteration_count": 0,
+            "max_iterations": self.max_iterations,
+            "files_modified": [],
+            "files_created": [],
+            "task_complete": False,
             "error": None,
-            "needs_user_input": False,
-            "user_question": None,
         }
 
         # Run the graph
-        result = self.graph.invoke(initial_state)
+        config = {"configurable": {"thread_id": thread_id}}
+        result = self.graph.invoke(initial_state, config)
+
         return result
 
-    def stream(self, user_input: str, workspace_path: Optional[str] = None):
+    def stream(
+        self,
+        user_input: str,
+        workspace_path: Optional[str] = None,
+        thread_id: str = "default"
+    ):
         """
-        Stream the agent's response.
+        Stream the agent's execution for real-time updates.
 
         Args:
-            user_input: User's message/request
-            workspace_path: Optional workspace path
+            user_input: User's request
+            workspace_path: Path to the ROS workspace
+            thread_id: Thread ID for memory
 
         Yields:
-            Intermediate states as the agent processes
+            State updates as the agent works
         """
-        workspace = None
+        workspace_info = {}
         if workspace_path:
-            workspace = WorkspaceInfo(path=workspace_path)
+            workspace_info = self._analyze_workspace(workspace_path)
 
         initial_state: AgentState = {
             "messages": [HumanMessage(content=user_input)],
-            "workspace": workspace,
-            "stage": "init",
-            "current_intent": "",
-            "pending_code": None,
-            "feedback_history": [],
+            "workspace_path": workspace_path or "",
+            "workspace_info": workspace_info,
+            "iteration_count": 0,
+            "max_iterations": self.max_iterations,
+            "files_modified": [],
+            "files_created": [],
+            "task_complete": False,
             "error": None,
-            "needs_user_input": False,
-            "user_question": None,
         }
 
-        for state in self.graph.stream(initial_state):
-            yield state
+        config = {"configurable": {"thread_id": thread_id}}
+
+        for event in self.graph.stream(initial_state, config, stream_mode="values"):
+            yield event
+
+    def continue_conversation(
+        self,
+        user_input: str,
+        thread_id: str = "default"
+    ) -> Dict[str, Any]:
+        """
+        Continue an existing conversation with new input.
+
+        Args:
+            user_input: New user input
+            thread_id: Thread ID to continue
+
+        Returns:
+            Updated state
+        """
+        config = {"configurable": {"thread_id": thread_id}}
+
+        # Get current state
+        current_state = self.graph.get_state(config)
+
+        if current_state and current_state.values:
+            # Add new message to existing conversation
+            messages = list(current_state.values.get("messages", []))
+            messages.append(HumanMessage(content=user_input))
+
+            # Update state
+            update = {
+                "messages": messages,
+                "task_complete": False,
+                "iteration_count": 0,  # Reset iteration count for new task
+            }
+
+            result = self.graph.invoke(update, config)
+            return result
+        else:
+            # No existing conversation, start fresh
+            return self.invoke(user_input, thread_id=thread_id)
 
 
 def create_simulation_graph(
     model_name: str = "gpt-4-turbo-preview",
-    api_key: Optional[str] = None
+    api_key: Optional[str] = None,
+    max_iterations: int = 25
 ) -> SimulationAgent:
     """
     Factory function to create a simulation agent.
@@ -461,8 +496,13 @@ def create_simulation_graph(
     Args:
         model_name: OpenAI model name
         api_key: OpenAI API key
+        max_iterations: Max iterations for autonomous work
 
     Returns:
         Configured SimulationAgent instance
     """
-    return SimulationAgent(model_name=model_name, api_key=api_key)
+    return SimulationAgent(
+        model_name=model_name,
+        api_key=api_key,
+        max_iterations=max_iterations
+    )
