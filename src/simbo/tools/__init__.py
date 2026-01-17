@@ -49,6 +49,7 @@ from .world_tools import (
     generate_world_launch_snippet,
     find_simulation_launch_files,
     update_simulation_launch_world,
+    track_latest_world,
 )
 
 __all__ = [
@@ -98,4 +99,6 @@ __all__ = [
     "generate_world_launch_snippet",
     "find_simulation_launch_files",
     "update_simulation_launch_world",
+    "update_all_simulation_launch_files",
+    "track_latest_world",
 ]

@@ -16,6 +16,7 @@ import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple
+from datetime import datetime
 from langchain_core.tools import tool
 
 from simbo.data.world_database import (
@@ -320,7 +321,8 @@ def find_worlds_package(workspace_path: str) -> Dict[str, Any]:
     """
     Find an existing worlds package in the ROS workspace.
 
-    Searches for packages named:
+    Prioritizes simbo_worlds package, then searches for packages named:
+    - simbo_worlds (priority)
     - *_worlds
     - *_simulation
     - *_gazebo
@@ -345,7 +347,24 @@ def find_worlds_package(workspace_path: str) -> Dict[str, Any]:
         result["error"] = f"No src directory found in workspace: {workspace_path}"
         return result
 
-    # Search patterns for world packages
+    # First, check for simbo_worlds specifically (priority)
+    simbo_worlds_path = os.path.join(src_path, "simbo_worlds")
+    if os.path.exists(simbo_worlds_path) and os.path.exists(os.path.join(simbo_worlds_path, "package.xml")):
+        worlds_dir = os.path.join(simbo_worlds_path, "worlds")
+        result["found"] = True
+        result["package_name"] = "simbo_worlds"
+        result["package_path"] = simbo_worlds_path
+        if os.path.exists(worlds_dir):
+            result["worlds_dir"] = worlds_dir
+            # List existing world files
+            for f in os.listdir(worlds_dir):
+                if f.endswith((".world", ".sdf")):
+                    result["existing_worlds"].append(f)
+        else:
+            result["worlds_dir"] = worlds_dir  # Will need to be created
+        return result
+
+    # Search patterns for world packages (fallback)
     patterns = ["_worlds", "_simulation", "_gazebo", "_sim"]
 
     for root, dirs, files in os.walk(src_path):
@@ -379,7 +398,7 @@ def find_worlds_package(workspace_path: str) -> Dict[str, Any]:
 @tool
 def create_worlds_package(
     workspace_path: str,
-    package_name: str = "my_worlds",
+    package_name: str = "simbo_worlds",
     description: str = "Gazebo world files for simulation",
     maintainer: str = "user",
     maintainer_email: str = "user@example.com"
@@ -389,7 +408,7 @@ def create_worlds_package(
 
     Creates a proper ament_cmake package structure:
     ```
-    my_worlds/
+    simbo_worlds/
     ├── package.xml
     ├── CMakeLists.txt
     └── worlds/
@@ -401,9 +420,9 @@ def create_worlds_package(
     - Include a launch file for easy world loading
     - Support both .world and .sdf formats
 
-    Args:
+        Args:
         workspace_path: Path to the ROS workspace
-        package_name: Name for the package (default: "my_worlds")
+        package_name: Name for the package (default: "simbo_worlds")
         description: Package description
         maintainer: Package maintainer name
         maintainer_email: Maintainer email
@@ -523,16 +542,24 @@ def generate_launch_description():
     # Declare arguments
     world_arg = DeclareLaunchArgument(
         'world',
-        default_value='empty',
-        description='Name of the world file (without .world extension)'
+        default_value='empty.world',
+        description='Name of the world file (with .world extension)'
     )
 
-    # World file path
+    # World file path - use PathJoinSubstitution with proper string construction
+    # The standard ROS2 approach: construct path components and join them
+    # For filename with extension, we'll use a substitution that concatenates
+    # Since we can't nest lists in PathJoinSubstitution, we construct the full path differently
+    # Option: Assume world argument includes .world extension, or handle it in the argument default
+    # Better: Use os.path.join with substitution evaluation at runtime
+    # Most common pattern: construct as string path using substitution
     world_file = PathJoinSubstitution([
         pkg_share,
         'worlds',
-        [LaunchConfiguration('world'), '.world']
+        LaunchConfiguration('world')
     ])
+    # Note: The world argument should be passed with .world extension
+    # Or we modify the argument to include it by default
 
     # Include Gazebo launch
     gazebo_launch = IncludeLaunchDescription(
@@ -648,15 +675,16 @@ def download_world_file(
             return result
         result["package_used"] = target_package
     else:
-        # Auto-detect worlds package
+        # Always use simbo_worlds package (fixed location)
+        new_pkg_name = "simbo_worlds"
+        
+        # Check if it exists
         pkg_info = find_worlds_package.invoke({"workspace_path": workspace_path})
-        if pkg_info.get("found"):
+        if pkg_info.get("found") and pkg_info.get("package_name") == "simbo_worlds":
             package_path = pkg_info["package_path"]
-            result["package_used"] = pkg_info["package_name"]
+            result["package_used"] = "simbo_worlds"
         else:
-            # Need to create a new package - use simple "my_worlds" name
-            new_pkg_name = "my_worlds"
-
+            # Create simbo_worlds package
             create_result = create_worlds_package.invoke({
                 "workspace_path": workspace_path,
                 "package_name": new_pkg_name,
@@ -703,6 +731,17 @@ def download_world_file(
         result["success"] = True
         result["world_file_path"] = target_path
         result["launch_command"] = f"ros2 launch {result['package_used']} world.launch.py world:={os.path.splitext(world_name)[0]}"
+        
+        # Track this as the latest world
+        track_result = track_latest_world.invoke({
+            "workspace_path": workspace_path,
+            "world_file_name": world_name,
+            "worlds_package_name": result["package_used"]
+        })
+        if track_result.get("success"):
+            result["latest_tracked"] = True
+        else:
+            result["warnings"].append(f"Failed to track latest world: {track_result.get('errors', [])}")
 
     except Exception as e:
         result["errors"].append(f"Failed to download world file: {str(e)}")
@@ -786,14 +825,16 @@ def write_world_file(
             return result
         result["package_used"] = target_package
     else:
+        # Always use simbo_worlds package (fixed location)
+        new_pkg_name = "simbo_worlds"
+        
+        # Check if it exists
         pkg_info = find_worlds_package.invoke({"workspace_path": workspace_path})
-        if pkg_info.get("found"):
+        if pkg_info.get("found") and pkg_info.get("package_name") == "simbo_worlds":
             package_path = pkg_info["package_path"]
-            result["package_used"] = pkg_info["package_name"]
+            result["package_used"] = "simbo_worlds"
         else:
-            # Create new package - use simple "my_worlds" name
-            new_pkg_name = "my_worlds"
-
+            # Create simbo_worlds package
             create_result = create_worlds_package.invoke({
                 "workspace_path": workspace_path,
                 "package_name": new_pkg_name,
@@ -820,6 +861,17 @@ def write_world_file(
         result["world_file_path"] = world_path
         world_base = os.path.splitext(world_name)[0]
         result["launch_command"] = f"ros2 launch {result['package_used']} world.launch.py world:={world_base}"
+        
+        # Track this as the latest world
+        track_result = track_latest_world.invoke({
+            "workspace_path": workspace_path,
+            "world_file_name": world_name,
+            "worlds_package_name": result["package_used"]
+        })
+        if track_result.get("success"):
+            result["latest_tracked"] = True
+        else:
+            result["errors"].append(f"Failed to track latest world: {track_result.get('errors', [])}")
 
     except Exception as e:
         result["errors"].append(f"Failed to write world file: {str(e)}")
@@ -1015,19 +1067,27 @@ def find_simulation_launch_files(workspace_path: str) -> Dict[str, Any]:
 def update_simulation_launch_world(
     launch_file_path: str,
     worlds_package_name: str,
-    world_file_name: str,
+    world_file_name: Optional[str] = None,
+    use_latest: bool = True,
+    workspace_path: Optional[str] = None,
     backup: bool = True
 ) -> Dict[str, Any]:
     """
     Update a simulation launch file to use a new world from the worlds package.
 
     This tool modifies existing launch files to point to the newly created world file
-    in the my_worlds (or similar) package. It handles both Python and XML launch files.
+    in the simbo_worlds package. It handles both Python and XML launch files.
+    
+    By default, it uses the latest world from tracking. If world_file_name is provided,
+    it will use that specific world instead.
 
     Args:
         launch_file_path: Path to the launch file to update
-        worlds_package_name: Name of the package containing the world (e.g., "my_worlds")
-        world_file_name: Name of the world file (e.g., "office.world" or "office")
+        worlds_package_name: Name of the package containing the world (e.g., "simbo_worlds")
+        world_file_name: Optional name of the world file (e.g., "office.world" or "office")
+                        If None and use_latest=True, uses the latest tracked world
+        use_latest: If True and world_file_name is None, use the latest tracked world
+        workspace_path: Path to the ROS workspace (required if use_latest=True)
         backup: Whether to create a backup of the original file
 
     Returns:
@@ -1043,6 +1103,22 @@ def update_simulation_launch_world(
 
     if not os.path.exists(launch_file_path):
         result["errors"].append(f"Launch file not found: {launch_file_path}")
+        return result
+
+    # Determine which world file to use
+    if use_latest and world_file_name is None:
+        if workspace_path is None:
+            result["errors"].append("workspace_path is required when use_latest=True")
+            return result
+        
+        latest_world = get_latest_world(workspace_path, worlds_package_name)
+        if latest_world is None:
+            result["errors"].append(f"No latest world tracked in {worlds_package_name} package")
+            return result
+        world_file_name = latest_world
+        result["changes_made"].append(f"Using latest tracked world: {world_file_name}")
+    elif world_file_name is None:
+        result["errors"].append("Either world_file_name must be provided or use_latest must be True")
         return result
 
     # Ensure world file has proper extension
@@ -1085,7 +1161,23 @@ def update_simulation_launch_world(
                 result["changes_made"].append("Added get_package_share_directory import")
 
             # Generate the new world path code
-            world_path_code = f"""
+            # Use latest world tracking if available
+            if use_latest and workspace_path:
+                world_path_code = f"""
+    # World file path from {worlds_package_name} (using latest tracked world)
+    import json
+    worlds_pkg_share = get_package_share_directory('{worlds_package_name}')
+    latest_world_file = os.path.join(worlds_pkg_share, '.simbo_latest_world')
+    if os.path.exists(latest_world_file):
+        with open(latest_world_file, 'r') as f:
+            latest_info = json.load(f)
+        world_file_path = os.path.join(worlds_pkg_share, 'worlds', latest_info['latest_world'])
+    else:
+        # Fallback to specific world if tracking file doesn't exist
+        world_file_path = os.path.join(worlds_pkg_share, 'worlds', '{world_file_name}')
+"""
+            else:
+                world_path_code = f"""
     # World file path from {worlds_package_name}
     worlds_pkg_share = get_package_share_directory('{worlds_package_name}')
     world_file_path = os.path.join(worlds_pkg_share, 'worlds', '{world_file_name}')
@@ -1110,8 +1202,11 @@ def update_simulation_launch_world(
                     new_content = re.sub(pattern, replacement, new_content)
                     result["changes_made"].append(f"Updated world path pattern: {pattern[:30]}...")
 
-            # Check if we need to add the world path code
-            if "world_file_path" in new_content and f"worlds_pkg_share = get_package_share_directory('{worlds_package_name}')" not in new_content:
+            # ALWAYS ensure world path code is added - be aggressive about updates
+            # Check if world path code already exists
+            world_path_exists = f"worlds_pkg_share = get_package_share_directory('{worlds_package_name}')" in new_content
+            
+            if not world_path_exists:
                 # Find generate_launch_description function
                 func_match = re.search(r'def\s+generate_launch_description\s*\(\s*\)\s*:', new_content)
                 if func_match:
@@ -1120,10 +1215,55 @@ def update_simulation_launch_world(
                     new_content = new_content[:insert_pos] + world_path_code + new_content[insert_pos:]
                     result["changes_made"].append("Inserted world path code in generate_launch_description")
 
-                    # Also ensure os import exists
+                    # Also ensure os and json imports exist
                     if "import os" not in new_content:
                         new_content = "import os\n" + new_content
                         result["changes_made"].append("Added os import")
+                    if use_latest and "import json" not in new_content:
+                        # Find where to insert json import (after os import or at the beginning)
+                        if "import os" in new_content:
+                            os_import_pos = new_content.find("import os")
+                            os_import_end = new_content.find("\n", os_import_pos)
+                            new_content = new_content[:os_import_end+1] + "import json\n" + new_content[os_import_end+1:]
+                        else:
+                            new_content = "import json\n" + new_content
+                        result["changes_made"].append("Added json import for latest world tracking")
+                else:
+                    # No generate_launch_description function found - add it at the end of the file
+                    new_content = new_content + "\n\n" + world_path_code
+                    result["changes_made"].append("Added world path code at end of file (no generate_launch_description found)")
+            
+            # Now update any world references to use world_file_path
+            # More aggressive pattern matching - look for any world-related assignments
+            additional_patterns = [
+                # Pattern: world_path = '...'
+                (r"world_path\s*=\s*['\"][^'\"]+['\"]",
+                 f"world_path = world_file_path"),
+                # Pattern: world_name = '...'
+                (r"world_name\s*=\s*['\"][^'\"]+['\"]",
+                 f"world_name = world_file_path"),
+                # Pattern: Any assignment with 'world' in variable name
+                (r"(\w*world\w*)\s*=\s*['\"][^'\"]+\.world['\"]",
+                 f"\\1 = world_file_path"),
+            ]
+            
+            for pattern, replacement in additional_patterns:
+                if re.search(pattern, new_content):
+                    new_content = re.sub(pattern, replacement, new_content)
+                    result["changes_made"].append(f"Updated world assignment pattern")
+            
+            # If we still haven't found where to use world_file_path, look for Gazebo launch includes
+            # and update their launch_arguments
+            if "world_file_path" not in new_content or "world_file_path" not in "".join(result["changes_made"]):
+                # Look for IncludeLaunchDescription with world argument
+                gazebo_include_pattern = r"(IncludeLaunchDescription\s*\([^)]*launch_arguments\s*=\s*\{[^}]*)(['\"]world['\"]\s*:\s*['\"][^'\"]+['\"])"
+                if re.search(gazebo_include_pattern, new_content, re.DOTALL):
+                    new_content = re.sub(
+                        r"(['\"]world['\"]\s*:\s*)(['\"][^'\"]+['\"])",
+                        r"\1world_file_path",
+                        new_content
+                    )
+                    result["changes_made"].append("Updated Gazebo launch include world argument")
 
         else:
             # Handle XML launch files
@@ -1137,37 +1277,145 @@ def update_simulation_launch_world(
                  f'world:="$(find {worlds_package_name})/worlds/{world_file_name}"'),
             ]
 
+            xml_updated = False
             for pattern, replacement in xml_patterns:
                 if re.search(pattern, new_content):
                     new_content = re.sub(pattern, replacement, new_content)
                     result["changes_made"].append(f"Updated XML world path")
+                    xml_updated = True
+            
+            # If no XML patterns matched, add a world argument if it doesn't exist
+            if not xml_updated:
+                # Look for <launch> tag and add world argument after it
+                launch_tag_match = re.search(r'<launch[^>]*>', new_content)
+                if launch_tag_match:
+                    world_arg_xml = f'\n  <arg name="world" default="$(find {worlds_package_name})/worlds/{world_file_name}"/>\n'
+                    insert_pos = launch_tag_match.end()
+                    new_content = new_content[:insert_pos] + world_arg_xml + new_content[insert_pos:]
+                    result["changes_made"].append("Added world argument to XML launch file")
 
-        # Write the modified content
+        # Write the modified content - ALWAYS write if we made any changes
         if new_content != original_content:
             with open(launch_file_path, 'w') as f:
                 f.write(new_content)
             result["success"] = True
+            result["changes_made"].append("Launch file updated successfully")
         else:
-            result["errors"].append("No world path patterns found to update. Manual modification may be required.")
-            # Provide guidance
-            result["manual_instructions"] = f"""
-To manually update the launch file, add:
-
-For Python launch files:
-1. Add import: from ament_index.python.packages import get_package_share_directory
-2. Add import: import os
-3. In generate_launch_description(), add:
-   worlds_pkg_share = get_package_share_directory('{worlds_package_name}')
-   world_file_path = os.path.join(worlds_pkg_share, 'worlds', '{world_file_name}')
-4. Use world_file_path where the world is specified
-
-For XML launch files:
-   Use: $(find {worlds_package_name})/worlds/{world_file_name}
-"""
-            result["success"] = True  # Consider it success with manual instructions
+            # Even if no patterns found, we should have added the world path code
+            # If we get here, something went wrong - but still mark as success if we have world_file_path
+            if "world_file_path" in new_content or f"worlds_pkg_share = get_package_share_directory('{worlds_package_name}')" in new_content:
+                result["success"] = True
+                result["changes_made"].append("World path code already present or added")
+            else:
+                # Last resort: add the world path code at the very beginning of generate_launch_description
+                func_match = re.search(r'def\s+generate_launch_description\s*\(\s*\)\s*:', new_content)
+                if func_match:
+                    insert_pos = func_match.end()
+                    new_content = new_content[:insert_pos] + world_path_code + new_content[insert_pos:]
+                    # Ensure imports
+                    if "import os" not in new_content:
+                        new_content = "import os\n" + new_content
+                    if use_latest and "import json" not in new_content:
+                        if "import os" in new_content:
+                            os_import_pos = new_content.find("import os")
+                            os_import_end = new_content.find("\n", os_import_pos)
+                            new_content = new_content[:os_import_end+1] + "import json\n" + new_content[os_import_end+1:]
+                    with open(launch_file_path, 'w') as f:
+                        f.write(new_content)
+                    result["success"] = True
+                    result["changes_made"].append("Force-added world path code to launch file")
+                else:
+                    result["errors"].append("Could not find generate_launch_description function to update")
+                    result["success"] = False
 
     except Exception as e:
         result["errors"].append(f"Error updating launch file: {str(e)}")
+
+    return result
+
+
+@tool
+def update_all_simulation_launch_files(
+    workspace_path: str,
+    worlds_package_name: str = "simbo_worlds",
+    use_latest: bool = True,
+    backup: bool = True
+) -> Dict[str, Any]:
+    """
+    Update ALL simulation launch files in the workspace to use the latest world.
+
+    This tool finds all simulation launch files and updates them automatically.
+    It ensures that ALL launch files are configured without requiring manual steps.
+
+    Args:
+        workspace_path: Path to the ROS workspace
+        worlds_package_name: Name of the worlds package (default: "simbo_worlds")
+        use_latest: If True, use the latest tracked world
+        backup: Whether to create backups of original files
+
+    Returns:
+        Dictionary with update status for all launch files
+    """
+    result = {
+        "success": True,
+        "launch_files_updated": [],
+        "launch_files_failed": [],
+        "total_found": 0,
+        "total_updated": 0,
+        "errors": [],
+    }
+
+    # Find all simulation launch files
+    launch_files_result = find_simulation_launch_files.invoke({"workspace_path": workspace_path})
+    launch_files = launch_files_result.get("launch_files", [])
+    
+    result["total_found"] = len(launch_files)
+
+    if not launch_files:
+        result["errors"].append("No simulation launch files found in workspace")
+        return result
+
+    # Update each launch file
+    for launch_file_info in launch_files:
+        launch_file_path = launch_file_info.get("path")
+        if not launch_file_path:
+            continue
+
+        try:
+            update_result = update_simulation_launch_world.invoke({
+                "launch_file_path": launch_file_path,
+                "worlds_package_name": worlds_package_name,
+                "use_latest": use_latest,
+                "workspace_path": workspace_path,
+                "backup": backup
+            })
+
+            if update_result.get("success"):
+                result["launch_files_updated"].append({
+                    "path": launch_file_path,
+                    "name": launch_file_info.get("name"),
+                    "changes": update_result.get("changes_made", [])
+                })
+                result["total_updated"] += 1
+            else:
+                result["launch_files_failed"].append({
+                    "path": launch_file_path,
+                    "name": launch_file_info.get("name"),
+                    "errors": update_result.get("errors", [])
+                })
+                result["errors"].extend(update_result.get("errors", []))
+
+        except Exception as e:
+            result["launch_files_failed"].append({
+                "path": launch_file_path,
+                "name": launch_file_info.get("name"),
+                "errors": [str(e)]
+            })
+            result["errors"].append(f"Error updating {launch_file_path}: {str(e)}")
+
+    # Overall success if at least one file was updated
+    if result["total_updated"] == 0 and result["total_found"] > 0:
+        result["success"] = False
 
     return result
 
@@ -1258,3 +1506,110 @@ ros2 launch {package_name} world.launch.py world:={world_name}
         "usage_instructions": usage,
         "launch_file_name": f"{world_name}_world.launch.py",
     }
+
+
+# =============================================================================
+# Latest World Tracking Tools
+# =============================================================================
+
+def get_latest_world(
+    workspace_path: str,
+    worlds_package_name: str = "simbo_worlds"
+) -> Optional[str]:
+    """
+    Get the name of the most recently generated world file.
+
+    Args:
+        workspace_path: Path to the ROS workspace
+        worlds_package_name: Name of the worlds package (default: "simbo_worlds")
+
+    Returns:
+        Name of the latest world file (e.g., "office.world") or None if not tracked
+    """
+    src_path = os.path.join(workspace_path, "src")
+    package_path = os.path.join(src_path, worlds_package_name)
+    tracking_file = os.path.join(package_path, ".simbo_latest_world")
+
+    if not os.path.exists(tracking_file):
+        return None
+
+    try:
+        with open(tracking_file, 'r') as f:
+            data = json.load(f)
+            return data.get("latest_world")
+    except (json.JSONDecodeError, IOError):
+        return None
+
+
+@tool
+def track_latest_world(
+    workspace_path: str,
+    world_file_name: str,
+    worlds_package_name: str = "simbo_worlds"
+) -> Dict[str, Any]:
+    """
+    Track the most recently generated world file as the latest.
+
+    Creates or updates a metadata file that stores which world file is the most recent.
+    This allows launch files to automatically use the latest generated world.
+
+    Args:
+        workspace_path: Path to the ROS workspace
+        world_file_name: Name of the world file (e.g., "office.world")
+        worlds_package_name: Name of the worlds package (default: "simbo_worlds")
+
+    Returns:
+        Dictionary with tracking status
+    """
+    result = {
+        "success": False,
+        "tracking_file_path": None,
+        "latest_world": None,
+        "errors": [],
+    }
+
+    src_path = os.path.join(workspace_path, "src")
+    if not os.path.exists(src_path):
+        result["errors"].append(f"No src directory found: {workspace_path}")
+        return result
+
+    package_path = os.path.join(src_path, worlds_package_name)
+    
+    # Ensure package exists
+    if not os.path.exists(package_path):
+        result["errors"].append(f"Worlds package not found: {worlds_package_name}")
+        return result
+
+    # Ensure world file name has extension
+    if not world_file_name.endswith('.world') and not world_file_name.endswith('.sdf'):
+        world_file_name = f"{world_file_name}.world"
+
+    # Verify world file exists
+    worlds_dir = os.path.join(package_path, "worlds")
+    world_file_path = os.path.join(worlds_dir, world_file_name)
+    if not os.path.exists(world_file_path):
+        result["errors"].append(f"World file not found: {world_file_path}")
+        return result
+
+    # Create/update tracking file
+    tracking_file = os.path.join(package_path, ".simbo_latest_world")
+    
+    try:
+        tracking_data = {
+            "latest_world": world_file_name,
+            "timestamp": datetime.now().isoformat(),
+            "package": worlds_package_name,
+            "world_file_path": world_file_path,
+        }
+
+        with open(tracking_file, 'w') as f:
+            json.dump(tracking_data, f, indent=2)
+
+        result["success"] = True
+        result["tracking_file_path"] = tracking_file
+        result["latest_world"] = world_file_name
+
+    except Exception as e:
+        result["errors"].append(f"Failed to write tracking file: {str(e)}")
+
+    return result

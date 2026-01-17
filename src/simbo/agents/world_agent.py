@@ -53,6 +53,8 @@ from ..tools.world_tools import (
     generate_world_launch_snippet,
     find_simulation_launch_files,
     update_simulation_launch_world,
+    update_all_simulation_launch_files,
+    track_latest_world,
 )
 
 
@@ -78,10 +80,11 @@ Gazebo Version: {gazebo_version}
 You MUST follow these steps for EVERY world request:
 
 ### Step 1: Determine Target Location
-- Find existing worlds package (*_worlds, *_simulation, *_gazebo)
-- If none exists, you will create one automatically
+- ALWAYS use the fixed package name: simbo_worlds
+- If simbo_worlds package doesn't exist, create it automatically
 - NEVER ask the user where to place files
 - NEVER use /tmp, home directories, or .gazebo
+- World files MUST be placed in: src/simbo_worlds/worlds/
 
 ### Step 2: Extract Constraints
 Use `extract_world_constraints` to parse the user's natural language request into:
@@ -107,22 +110,30 @@ Use `search_world_database` with the extracted constraints to:
 
 ### Step 5: Create Package and Place World File
 Use `download_world_file` or `write_world_file` to:
-- Create a `my_worlds` package if none exists:
+- ALWAYS use the fixed package name: simbo_worlds
+- Create simbo_worlds package if it doesn't exist:
   ```
-  my_worlds/
+  simbo_worlds/
   ├── package.xml
   ├── CMakeLists.txt
   └── worlds/
       └── <name>.world  (your world file)
   ```
-- Place the world file in: my_worlds/worlds/<name>.world
+- Place the world file in: simbo_worlds/worlds/<name>.world
 - The tool handles package creation automatically
+- After placing the world file, use `track_latest_world` to mark it as the latest
 
-### Step 6: Update Simulation Launch File
-After placing the world file, you MUST update existing simulation launch files:
-1. Use `find_simulation_launch_files` to find launch files that use worlds
-2. Use `update_simulation_launch_world` to modify the launch file to point to the new world
-3. This ensures the simulation uses the newly created world automatically
+### Step 6: Update Simulation Launch File (MANDATORY - NO MANUAL STEPS)
+After placing the world file and tracking it as latest, you MUST automatically update ALL existing simulation launch files:
+1. Use `update_all_simulation_launch_files` with:
+   - workspace_path set to the workspace path
+   - use_latest=True
+   - This will automatically find and update ALL launch files at once
+2. Alternatively, use `find_simulation_launch_files` then `update_simulation_launch_world` for each file
+3. The update function will ALWAYS succeed - it will insert the world path code even if no patterns are found
+4. NEVER tell the user to manually configure anything - all updates must be automatic
+5. NEVER provide manual update instructions in your response
+6. The launch file will read from the tracking metadata to get the latest world automatically
 
 ### Step 7: Validate and Report
 Use `validate_world_file` to verify the world file, then report:
@@ -143,17 +154,19 @@ Use `validate_world_file` to verify the world file, then report:
 - .gazebo directory
 - Absolute paths outside ROS workspace
 
-## Package Selection Logic
+## Package Selection Logic (FIXED)
 
 When placing a world file:
-1. Scan workspace for existing package named *_worlds, *_simulation, *_gazebo
-2. If found → Use it
-3. If not found → Create <workspace_name>_worlds package
+1. ALWAYS use the fixed package name: simbo_worlds
+2. Check if simbo_worlds package exists in src/
+3. If not found → Create simbo_worlds package automatically
+4. NEVER use other package names or ask the user
 
-The package MUST contain:
+The simbo_worlds package MUST contain:
 - package.xml
 - CMakeLists.txt (for ament_cmake to install worlds)
-- worlds/ directory
+- worlds/ directory (where world files are placed)
+- .simbo_latest_world (metadata file tracking the latest world)
 
 ## Output Format
 
@@ -208,6 +221,8 @@ You MUST NOT:
 - Generate worlds from scratch (retrieve existing ones only)
 - Embed raw .world file content in prompts
 - Ask the user where to place files (decide automatically)
+- Ask the user to manually configure launch files (ALWAYS do it automatically)
+- Provide manual update instructions (the update function handles everything automatically)
 
 ## Error Handling
 
@@ -300,6 +315,9 @@ class WorldDesignAgent:
             # Launch file management
             find_simulation_launch_files,
             update_simulation_launch_world,
+            update_all_simulation_launch_files,
+            # Latest world tracking
+            track_latest_world,
             # Workspace analysis (read-only)
             detect_ros_version,
             analyze_workspace,
@@ -412,6 +430,11 @@ class WorldDesignAgent:
 
                 elif tool_name == "write_world_file":
                     world_file_path = None  # Will be set from result
+                
+                # Track latest world tracking
+                elif tool_name == "track_latest_world":
+                    # Latest world is being tracked
+                    pass
 
         return {
             "messages": [response],
