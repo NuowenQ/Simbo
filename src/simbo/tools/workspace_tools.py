@@ -3,6 +3,7 @@ Tools for analyzing and interacting with ROS workspaces.
 """
 
 import os
+import re
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -381,3 +382,241 @@ def find_source_files(
                 source_files.append(file_info)
 
     return source_files
+
+
+@tool
+def check_ros2_entry_points(
+    package_path: str,
+    node_name: Optional[str] = None,
+    node_file: Optional[str] = None
+) -> Dict[str, any]:
+    """
+    Check if a ROS2 package has proper entry points configured in setup.py.
+    
+    Args:
+        package_path: Path to the ROS2 package directory
+        node_name: Optional specific node name to check for
+        node_file: Optional path to node file to extract node name from
+    
+    Returns:
+        Dictionary with validation results and suggestions
+    """
+    result = {
+        "setup_py_exists": False,
+        "has_entry_points": False,
+        "entry_points_found": [],
+        "missing_entry_points": [],
+        "errors": [],
+        "suggestions": []
+    }
+    
+    setup_py_path = os.path.join(package_path, "setup.py")
+    
+    if not os.path.exists(setup_py_path):
+        result["errors"].append(f"setup.py not found in {package_path}")
+        return result
+    
+    result["setup_py_exists"] = True
+    
+    # Extract node name from file if provided
+    if node_file and not node_name:
+        node_name = os.path.splitext(os.path.basename(node_file))[0]
+    
+    try:
+        with open(setup_py_path, 'r') as f:
+            content = f.read()
+        
+        # Check if entry_points section exists
+        if "entry_points" in content and "console_scripts" in content:
+            result["has_entry_points"] = True
+            
+            # Extract existing entry points
+            # Pattern: 'node_name=' or "node_name="
+            entry_point_pattern = re.compile(r"['\"]([^'\"]+)=([^'\"]+):([^'\"]+)['\"]")
+            matches = entry_point_pattern.findall(content)
+            
+            for match in matches:
+                ep_node_name, module_path, func_name = match
+                result["entry_points_found"].append({
+                    "node_name": ep_node_name,
+                    "module_path": module_path,
+                    "function": func_name
+                })
+            
+            # If specific node name provided, check if it exists
+            if node_name:
+                found = any(ep["node_name"] == node_name for ep in result["entry_points_found"])
+                if not found:
+                    result["missing_entry_points"].append(node_name)
+                    # Generate suggestion
+                    if node_file:
+                        # Try to extract module path
+                        workspace_path = package_path
+                        while not os.path.exists(os.path.join(workspace_path, "src")) and workspace_path != "/":
+                            workspace_path = os.path.dirname(workspace_path)
+                        
+                        src_path = os.path.join(workspace_path, "src")
+                        if os.path.exists(src_path):
+                            rel_path = os.path.relpath(node_file, src_path)
+                            module_path = rel_path.replace(os.sep, '.').replace('.py', '')
+                        else:
+                            # Fallback: use package name
+                            package_name = os.path.basename(package_path)
+                            node_base = os.path.splitext(os.path.basename(node_file))[0]
+                            module_path = f"{package_name}.{node_base}"
+                        
+                        # Try to extract function name
+                        func_name = "main"  # Default
+                        try:
+                            with open(node_file, 'r') as f:
+                                node_content = f.read()
+                                main_match = re.search(r'def\s+(main)\s*\(', node_content)
+                                if main_match:
+                                    func_name = main_match.group(1)
+                        except Exception:
+                            pass
+                        
+                        entry_point_str = f"{node_name}={module_path}:{func_name}"
+                        result["suggestions"].append(
+                            f"Add to setup.py entry_points: {{'console_scripts': ['{entry_point_str}']}}"
+                        )
+        else:
+            result["errors"].append("setup.py does not contain entry_points with console_scripts")
+            if node_name:
+                result["suggestions"].append(
+                    "Add entry_points section to setup.py with console_scripts"
+                )
+    
+    except Exception as e:
+        result["errors"].append(f"Error reading setup.py: {str(e)}")
+    
+    return result
+
+
+@tool
+def check_python_script_executable(script_path: str) -> Dict[str, any]:
+    """
+    Check if a Python script is executable.
+    
+    Args:
+        script_path: Path to the Python script file
+    
+    Returns:
+        Dictionary with executable status and fix suggestion
+    """
+    result = {
+        "exists": False,
+        "is_executable": False,
+        "fix_command": None,
+        "error": None
+    }
+    
+    if not os.path.exists(script_path):
+        result["error"] = f"Script file not found: {script_path}"
+        return result
+    
+    result["exists"] = True
+    
+    try:
+        stat_info = os.stat(script_path)
+        is_executable = bool(stat_info.st_mode & 0o111)
+        result["is_executable"] = is_executable
+        
+        if not is_executable:
+            result["fix_command"] = f"chmod +x {script_path}"
+    
+    except Exception as e:
+        result["error"] = f"Error checking file permissions: {str(e)}"
+    
+    return result
+
+
+@tool
+def check_executable_configuration(
+    workspace_path: str,
+    node_file: str,
+    ros_version: str = "ros2"
+) -> Dict[str, any]:
+    """
+    Check if a ROS node file has proper executable configuration.
+    This is a high-level validation that checks both entry points (ROS2) and permissions (ROS1).
+    
+    Args:
+        workspace_path: Path to the ROS workspace
+        node_file: Path to the Python node file
+        ros_version: Either "ros1" or "ros2"
+    
+    Returns:
+        Dictionary with validation results, errors, and fix suggestions
+    """
+    result = {
+        "is_valid": False,
+        "node_file": node_file,
+        "ros_version": ros_version,
+        "errors": [],
+        "warnings": [],
+        "fix_suggestions": []
+    }
+    
+    if not os.path.exists(node_file):
+        result["errors"].append(f"Node file not found: {node_file}")
+        return result
+    
+    if ros_version == "ros2":
+        # For ROS2, check entry points in setup.py
+        # Find package directory containing this node
+        current_dir = os.path.dirname(node_file)
+        package_dir = None
+        
+        # Walk up to find package.xml or setup.py
+        while current_dir != workspace_path and current_dir != "/":
+            if os.path.exists(os.path.join(current_dir, "package.xml")):
+                package_dir = current_dir
+                break
+            current_dir = os.path.dirname(current_dir)
+        
+        if not package_dir:
+            result["errors"].append(f"Could not find package directory for {node_file}")
+            result["warnings"].append("Node might not be in a proper ROS package")
+            return result
+        
+        # Check entry points
+        node_name = os.path.splitext(os.path.basename(node_file))[0]
+        entry_point_result = check_ros2_entry_points.invoke({
+            "package_path": package_dir,
+            "node_name": node_name,
+            "node_file": node_file
+        })
+        
+        if entry_point_result.get("errors"):
+            result["errors"].extend(entry_point_result["errors"])
+        
+        if entry_point_result.get("missing_entry_points"):
+            result["is_valid"] = False
+            result["errors"].append(
+                f"Missing entry point for node '{node_name}' in setup.py"
+            )
+            if entry_point_result.get("suggestions"):
+                result["fix_suggestions"].extend(entry_point_result["suggestions"])
+        elif entry_point_result.get("has_entry_points"):
+            result["is_valid"] = True
+    
+    elif ros_version == "ros1":
+        # For ROS1, check if script is executable
+        exec_result = check_python_script_executable.invoke({"script_path": node_file})
+        
+        if exec_result.get("error"):
+            result["errors"].append(exec_result["error"])
+        
+        if not exec_result.get("is_executable"):
+            result["is_valid"] = False
+            result["errors"].append(f"Python script is not executable: {node_file}")
+            if exec_result.get("fix_command"):
+                result["fix_suggestions"].append(exec_result["fix_command"])
+        else:
+            result["is_valid"] = True
+    
+    else:
+        result["errors"].append(f"Unknown ROS version: {ros_version}")
+    
+    return result

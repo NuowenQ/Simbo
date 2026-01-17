@@ -31,6 +31,9 @@ from ..tools.workspace_tools import (
     read_package_xml,
     find_launch_files,
     find_source_files,
+    check_ros2_entry_points,
+    check_python_script_executable,
+    check_executable_configuration,
 )
 from ..tools.file_tools import (
     read_file,
@@ -152,7 +155,11 @@ A task is NOT complete until ALL of these pass:
 1. **Workspace builds successfully**: build_ros_workspace returns success=True
 2. **Controller loads in ROS**: check_ros_nodes shows the controller node
 3. **Required topics exist**: check_ros_topics shows all required topics
-4. **No runtime errors**: Controller runs without errors (test with short timeout)
+4. **Executables configured correctly**:
+   - **ROS2**: Python nodes MUST have entry points in setup.py entry_points['console_scripts']
+   - **ROS1**: Python scripts MUST be executable (chmod +x) or in scripts/ directory
+   - Example ROS2 entry point: entry_points={{'console_scripts': ['node_name=package.module:main']}}
+5. **No runtime errors**: Controller runs without errors (test with short timeout)
 
 DO NOT mark tasks complete based on text descriptions alone. Only mark complete after deterministic validation passes.
 
@@ -173,10 +180,15 @@ For ROS2 Python:
 - Follow ROS2 naming conventions
 - Include proper type hints
 - Add docstrings
+- **CRITICAL**: All Python nodes MUST be registered in setup.py with entry_points
+  - Example: entry_points={{'console_scripts': ['control_panel_node=package_name.control_panel_node:main']}}
+  - The module path should be relative to the package (package_name.module_name:function_name)
+  - Without this, ros2 run will fail with "No executable found"
 
 For ROS1 Python:
 - Use rospy for node creation
 - Follow ROS1 conventions
+- **CRITICAL**: Python scripts must be executable (chmod +x) or placed in scripts/ directory
 
 When you complete a task, summarize:
 1. What files were created/modified
@@ -275,6 +287,10 @@ class SimulationAgent:
             read_package_xml,
             find_launch_files,
             find_source_files,
+            # Validation tools
+            check_ros2_entry_points,
+            check_python_script_executable,
+            check_executable_configuration,
             # File operations
             read_file,
             write_file,
@@ -526,6 +542,7 @@ class SimulationAgent:
             "controller_loaded": False,
             "topics_exist": False,
             "runtime_errors": False,
+            "executables_configured": False,
             "errors": []
         }
 
@@ -550,7 +567,34 @@ class SimulationAgent:
             if not validation_results["controller_loaded"]:
                 validation_results["errors"].append("No controller files found")
 
-        # Check 3: Required topics exist (if specified)
+        # Check 3: Executables configured correctly - use validation tools
+        python_nodes = [f for f in files_created if f.endswith(".py") and os.path.exists(f)]
+        if python_nodes and workspace_path:
+            all_valid = True
+            for node_file in python_nodes:
+                exec_result = check_executable_configuration.invoke({
+                    "workspace_path": workspace_path,
+                    "node_file": node_file,
+                    "ros_version": ros_version
+                })
+                
+                if not exec_result.get("is_valid"):
+                    all_valid = False
+                    if exec_result.get("errors"):
+                        validation_results["errors"].extend(exec_result["errors"])
+                    if exec_result.get("fix_suggestions"):
+                        # Add suggestions as errors with context
+                        for suggestion in exec_result["fix_suggestions"]:
+                            validation_results["errors"].append(
+                                f"{node_file}: {suggestion}"
+                            )
+            
+            validation_results["executables_configured"] = all_valid
+        else:
+            # No Python nodes to check
+            validation_results["executables_configured"] = True
+
+        # Check 4: Required topics exist (if specified)
         if required_topics and workspace_path:
             topics_result = check_ros_topics.invoke({
                 "ros_version": ros_version,
@@ -568,7 +612,7 @@ class SimulationAgent:
                 # If we can't check topics, assume they might be created by the controller
                 validation_results["topics_exist"] = True
 
-        # Check 4: Runtime errors (basic syntax check via build)
+        # Check 5: Runtime errors (basic syntax check via build)
         # Runtime errors are primarily caught during build, so we rely on build_success
         validation_results["runtime_errors"] = validation_results["build_success"]
 
@@ -577,7 +621,8 @@ class SimulationAgent:
             validation_results["build_success"] and
             validation_results["controller_loaded"] and
             validation_results["topics_exist"] and
-            validation_results["runtime_errors"]
+            validation_results["runtime_errors"] and
+            validation_results["executables_configured"]
         )
 
         return {

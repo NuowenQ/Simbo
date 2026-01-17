@@ -7,6 +7,9 @@ from .workspace_tools import (
     read_package_xml,
     find_launch_files,
     find_source_files,
+    check_ros2_entry_points,
+    check_python_script_executable,
+    check_executable_configuration,
 )
 from .file_tools import (
     read_file,
@@ -42,6 +45,10 @@ __all__ = [
     "read_package_xml",
     "find_launch_files",
     "find_source_files",
+    # Validation tools
+    "check_ros2_entry_points",
+    "check_python_script_executable",
+    "check_executable_configuration",
     # File tools
     "read_file",
     "write_file",
