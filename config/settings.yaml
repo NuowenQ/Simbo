@@ -1,0 +1,62 @@
+# Simbo Configuration Settings
+
+# OpenAI Configuration
+openai:
+  model: "gpt-4-turbo-preview"
+  temperature: 0.1
+  max_tokens: 4096
+
+# Agent Configuration
+agent:
+  max_iterations: 10
+  timeout_seconds: 120
+  enable_streaming: true
+
+# Workspace Analysis
+workspace:
+  # File extensions to analyze
+  source_extensions:
+    - ".py"
+    - ".cpp"
+    - ".c"
+    - ".h"
+    - ".hpp"
+
+  # Directories to skip during analysis
+  skip_directories:
+    - "build"
+    - "install"
+    - "log"
+    - "__pycache__"
+    - ".git"
+    - "node_modules"
+    - ".venv"
+
+  # Maximum files to analyze per package
+  max_files_per_package: 100
+
+# Code Generation
+code_generation:
+  # Default controller parameters
+  default_params:
+    linear_speed: 0.5
+    angular_speed: 1.0
+    publish_rate: 10.0
+    kp_linear: 0.5
+    kp_angular: 1.0
+    goal_tolerance: 0.1
+
+  # Template directory
+  template_dir: "templates"
+
+# Streamlit UI Configuration
+ui:
+  theme: "light"
+  max_chat_history: 100
+  auto_save_history: true
+
+# Logging
+logging:
+  level: "INFO"
+  file: "logs/simbo.log"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
