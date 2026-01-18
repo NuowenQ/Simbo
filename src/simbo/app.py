@@ -22,6 +22,7 @@ from simbo.views import (
     render_robot_page,
     render_world_page,
     render_workspace_manager_page,
+    render_map_generator_page,
     render_sidebar,
     render_home_sidebar,
 )
@@ -127,7 +128,7 @@ def init_session_state():
         "files_created": [],
         "files_modified": [],
         "is_processing": False,
-        "current_page": "home",  # home, program, robot, world, workspace_manager
+        "current_page": "home",  # home, program, robot, world, workspace_manager, map_generator
         "app_version": "2.0",  # Version to track UI updates
     }
 
@@ -165,6 +166,9 @@ def main():
     elif current_page == "workspace_manager":
         render_home_sidebar()
         render_workspace_manager_page()
+    elif current_page == "map_generator":
+        render_home_sidebar()
+        render_map_generator_page()
     else:
         # Default to home page
         render_home_sidebar()

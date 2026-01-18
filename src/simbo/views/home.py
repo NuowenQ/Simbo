@@ -75,6 +75,24 @@ def render_main_page():
             st.session_state.current_page = "workspace_manager"
             st.rerun()
 
+    st.markdown("")  # Spacing
+
+    col5, col6 = st.columns(2)
+
+    with col5:
+        if st.button(
+            "🗺️\n\n**Map Generator**\n\nConvert 2D images to Gazebo world files",
+            key="btn_map_generator",
+            use_container_width=True,
+            type="primary"
+        ):
+            st.session_state.current_page = "map_generator"
+            st.rerun()
+
+    with col6:
+        # Empty column for future features
+        pass
+
     # Footer tips
     st.markdown("""
     ---
@@ -84,4 +102,5 @@ def render_main_page():
     - **Robot**: Configure robot models and URDF files
     - **World**: Design Gazebo simulation environments
     - **Workspace Manager**: Manage packages and build your workspace
+    - **Map Generator**: Convert top-down map images to Gazebo world files
     """)
