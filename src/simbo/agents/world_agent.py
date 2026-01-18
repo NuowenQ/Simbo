@@ -137,10 +137,29 @@ World files reference models using model:// URIs. These models MUST be downloade
 Use `download_world_models` immediately after placing the world file:
 - Pass the world_file_path from the download result
 - Pass the workspace_path
-- This downloads all referenced models (ground_plane, sun, willowgarage, etc.) to simbo_worlds/models/
-- The launch file sets GAZEBO_MODEL_PATH to include this directory
+- **CRITICAL**: Pass the correct `models_repo` parameter based on the world's source:
 
-If you skip this step, Gazebo will show an empty world because it cannot find the required models.
+**Model Repository Mapping (MUST FOLLOW)**:
+| World Source | models_repo Parameter |
+|--------------|----------------------|
+| AWS RoboMaker worlds (small_house, hospital, bookstore) | Use same repo as world (e.g., "aws-robotics/aws-robomaker-small-house-world") |
+| Gazebo classic worlds (willowgarage, cafe, empty, rubble) | "osrf/gazebo_models" |
+| TurtleBot3 worlds | "ROBOTIS-GIT/turtlebot3_simulations" |
+| Clearpath worlds | Same repo as world source |
+
+**Examples**:
+```python
+# For AWS small_house world:
+download_world_models(world_file_path, workspace_path, models_repo="aws-robotics/aws-robomaker-small-house-world")
+
+# For willowgarage (gazebo-classic):
+download_world_models(world_file_path, workspace_path, models_repo="osrf/gazebo_models")
+```
+
+The world metadata includes a `models_repo` field - use `get_world_details` to retrieve it.
+If `models_repo` is None in the metadata, the models are in the same repo as `source_repo`.
+
+If you skip this step or use the wrong repository, Gazebo will show an empty world because it cannot find the required models.
 
 ### Step 6: Update Simulation Launch File (MANDATORY - NO MANUAL STEPS)
 After placing the world file and tracking it as latest, you MUST automatically update ALL existing simulation launch files:
@@ -179,15 +198,16 @@ When generating or updating launch files, you MUST ALWAYS use the CORRECT import
 
 ✅ CORRECT:
 ```python
-from ament_index.python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_share_directory
 ```
 
 ❌ WRONG (DO NOT USE):
 ```python
-from ament_index_python.packages import get_package_share_directory
+from ament_index.python.packages import get_package_share_directory
 ```
 
-**The correct import uses a DOT (.) between "ament_index" and "python", NOT an underscore (_).**
+**The correct import uses an UNDERSCORE (_) between "ament_index" and "python", NOT a dot (.).**
+**The package name is `ament_index_python`, NOT `ament_index.python`.**
 
 Always verify that any launch file code you generate or update uses the correct import statement.
 

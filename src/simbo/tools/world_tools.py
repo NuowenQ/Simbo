@@ -573,7 +573,7 @@ Usage:
 
 import os
 import json
-from ament_index.python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -1520,18 +1520,22 @@ def extract_world_models(world_file_path: str) -> Dict[str, Any]:
     return _extract_world_models_impl(world_file_path)
 
 
-def _download_model_from_gazebo_models(
+def _download_model_from_repo(
     model_name: str,
     output_dir: str,
-    branch: str = "master"
+    repo: str = "osrf/gazebo_models",
+    branch: str = "master",
+    models_subdir: str = ""
 ) -> Dict[str, Any]:
     """
-    Download a model from the osrf/gazebo_models repository.
+    Download a model from a GitHub repository.
 
     Args:
         model_name: Name of the model (e.g., "ground_plane", "willowgarage")
         output_dir: Directory to save the model
+        repo: GitHub repository (e.g., "osrf/gazebo_models", "aws-robotics/aws-robomaker-small-house-world")
         branch: Branch to download from (default: master)
+        models_subdir: Subdirectory in repo where models are located (e.g., "models")
 
     Returns:
         Dictionary with download status
@@ -1543,8 +1547,11 @@ def _download_model_from_gazebo_models(
         "warnings": [],
     }
 
-    repo_parts = "osrf/gazebo_models"
+    repo_parts = repo
     model_dir = os.path.join(output_dir, model_name)
+
+    # Path to model in repo (may be in a models/ subdirectory)
+    model_repo_path = f"{models_subdir}/{model_name}" if models_subdir else model_name
 
     # Try git sparse checkout first (most reliable for directories)
     try:
@@ -1576,13 +1583,13 @@ def _download_model_from_gazebo_models(
 
                 if clone_result.returncode == 0:
                     # Set up sparse checkout for the model directory
-                    sparse_cmd = ['git', 'sparse-checkout', 'set', model_name]
+                    sparse_cmd = ['git', 'sparse-checkout', 'set', model_repo_path]
                     subprocess.run(sparse_cmd, capture_output=True, text=True, timeout=10, cwd=repo_dir)
 
                     # Checkout
                     subprocess.run(['git', 'checkout'], capture_output=True, text=True, timeout=10, cwd=repo_dir)
 
-                    source_model = os.path.join(repo_dir, model_name)
+                    source_model = os.path.join(repo_dir, model_repo_path)
                     if os.path.exists(source_model) and os.path.isdir(source_model):
                         os.makedirs(output_dir, exist_ok=True)
                         if os.path.exists(model_dir):
@@ -1604,14 +1611,14 @@ def _download_model_from_gazebo_models(
     # Fallback: try downloading essential files via raw URLs
     # Models typically have: model.config, model.sdf (or *.sdf)
     essential_files = ["model.config", "model.sdf"]
-    branches_to_try = [branch, "master", "main"]
+    branches_to_try = [branch, "master", "main", "ros2"]
 
     for try_branch in branches_to_try:
         files_downloaded = 0
         os.makedirs(model_dir, exist_ok=True)
 
         for filename in essential_files:
-            raw_url = f"https://raw.githubusercontent.com/{repo_parts}/{try_branch}/{model_name}/{filename}"
+            raw_url = f"https://raw.githubusercontent.com/{repo_parts}/{try_branch}/{model_repo_path}/{filename}"
             target_file = os.path.join(model_dir, filename)
 
             try:
@@ -1632,32 +1639,52 @@ def _download_model_from_gazebo_models(
             result["warnings"].append(f"Downloaded {files_downloaded} essential files (meshes may be missing)")
             return result
 
-    result["errors"].append(f"Failed to download model '{model_name}' from osrf/gazebo_models")
+    result["errors"].append(f"Failed to download model '{model_name}' from {repo}")
     return result
+
+
+# Backward compatibility alias
+def _download_model_from_gazebo_models(
+    model_name: str,
+    output_dir: str,
+    branch: str = "master"
+) -> Dict[str, Any]:
+    """Backward compatibility wrapper for _download_model_from_repo."""
+    return _download_model_from_repo(model_name, output_dir, "osrf/gazebo_models", branch)
 
 
 @tool
 def download_world_models(
     world_file_path: str,
     workspace_path: str,
-    target_package: Optional[str] = None
+    target_package: Optional[str] = None,
+    models_repo: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Download all models referenced in a world file to the workspace.
 
     This tool:
     1. Extracts all model:// references from the world file
-    2. Downloads each model from osrf/gazebo_models repository
+    2. Downloads each model from the specified repository (or osrf/gazebo_models by default)
     3. Places them in the package's models/ directory
     4. Returns status for each model
 
     IMPORTANT: This should be called after downloading a world file to ensure
     all required models are available for Gazebo to load.
 
+    CRITICAL: You MUST specify the correct models_repo based on the world's source:
+    - AWS RoboMaker worlds (small_house, hospital, bookstore): Use the same repo as source
+      e.g., "aws-robotics/aws-robomaker-small-house-world" has models in "models/" subdirectory
+    - Gazebo classic worlds (willowgarage, cafe, empty): Use "osrf/gazebo_models"
+    - TurtleBot3 worlds: Use "ROBOTIS-GIT/turtlebot3_simulations" with appropriate subdirectory
+
     Args:
         world_file_path: Path to the world file
         workspace_path: Path to the ROS workspace
         target_package: Package to store models (default: simbo_worlds)
+        models_repo: GitHub repository containing models. Format: "owner/repo"
+                     If not specified, defaults to "osrf/gazebo_models".
+                     For AWS RoboMaker worlds, use the world's source repo.
 
     Returns:
         Dictionary with download status for each model
@@ -1668,6 +1695,7 @@ def download_world_models(
         "models_failed": [],
         "models_skipped": [],
         "models_dir": None,
+        "models_repo_used": models_repo or "osrf/gazebo_models",
         "errors": [],
         "warnings": [],
     }
@@ -1698,6 +1726,24 @@ def download_world_models(
     os.makedirs(models_dir, exist_ok=True)
     result["models_dir"] = models_dir
 
+    # Determine repository and subdirectory for models
+    repo = models_repo or "osrf/gazebo_models"
+
+    # Determine models subdirectory based on repo type
+    # AWS RoboMaker repos have models in "models/" subdirectory
+    # osrf/gazebo_models has models at root level
+    if "aws-robotics" in repo or "aws-robomaker" in repo.lower():
+        models_subdir = "models"
+    elif repo == "osrf/gazebo_models":
+        models_subdir = ""  # Models at root level
+    elif "turtlebot3" in repo.lower():
+        models_subdir = "turtlebot3_gazebo/models"
+    elif "clearpath" in repo.lower():
+        models_subdir = "models"  # Clearpath repos usually have models/ dir
+    else:
+        # Default: assume models are in a "models" subdirectory
+        models_subdir = "models"
+
     # Download each model
     for model_name in models:
         model_path = os.path.join(models_dir, model_name)
@@ -1710,7 +1756,22 @@ def download_world_models(
                 result["models_skipped"].append(model_name)
                 continue
 
-        download_result = _download_model_from_gazebo_models(model_name, models_dir)
+        # Try downloading from specified repo first
+        download_result = _download_model_from_repo(
+            model_name, models_dir, repo=repo, models_subdir=models_subdir
+        )
+
+        # If failed and not using osrf/gazebo_models, try osrf/gazebo_models as fallback
+        # (for common models like ground_plane, sun, etc.)
+        if not download_result.get("success") and repo != "osrf/gazebo_models":
+            fallback_result = _download_model_from_repo(
+                model_name, models_dir, repo="osrf/gazebo_models", models_subdir=""
+            )
+            if fallback_result.get("success"):
+                download_result = fallback_result
+                download_result["warnings"].append(
+                    f"Model '{model_name}' downloaded from osrf/gazebo_models (fallback)"
+                )
 
         if download_result.get("success"):
             result["models_downloaded"].append(model_name)
@@ -1916,7 +1977,7 @@ def update_simulation_launch_world(
             # Replace wrong import: from ament_index_python.packages import ...
             # With correct import: from ament_index.python.packages import ...
             wrong_import_pattern = r'from\s+ament_index_python\.packages\s+import\s+get_package_share_directory'
-            correct_import = "from ament_index.python.packages import get_package_share_directory"
+            correct_import = "from ament_index_python.packages import get_package_share_directory"
             if re.search(wrong_import_pattern, new_content):
                 new_content = re.sub(wrong_import_pattern, correct_import, new_content)
                 result["changes_made"].append("Fixed incorrect import: changed ament_index_python to ament_index.python")
@@ -1924,7 +1985,7 @@ def update_simulation_launch_world(
             # Check if get_package_share_directory import exists (with correct syntax)
             if "get_package_share_directory" not in new_content:
                 # Add the import with CORRECT syntax
-                import_line = "from ament_index.python.packages import get_package_share_directory\n"
+                import_line = "from ament_index_python.packages import get_package_share_directory\n"
                 # Find where to insert (after other imports or at the beginning)
                 import_match = re.search(r'^(import|from)\s+', new_content, re.MULTILINE)
                 if import_match:
@@ -2222,7 +2283,7 @@ Generated by Simbo World Design Agent.
 """
 
 import os
-from ament_index.python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -2274,7 +2335,7 @@ ros2 launch {package_name} {world_name}_world.launch.py
 ros2 launch {package_name} world.launch.py world:={world_name}
 
 # To spawn a robot in this world, add to your robot launch file:
-# from ament_index.python.packages import get_package_share_directory
+# from ament_index_python.packages import get_package_share_directory
 # world_path = os.path.join(get_package_share_directory('{package_name}'), 'worlds', '{world_name}.world')
 '''
 

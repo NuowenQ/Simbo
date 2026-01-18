@@ -63,6 +63,12 @@ class WorldMetadata:
     # Semantic features (tags)
     semantic_features: List[str] = field(default_factory=list)
 
+    # Models source (where to download models from)
+    # If None, models are in the same repo as the world file under 'models/' directory
+    # If "osrf/gazebo_models", use the standard Gazebo models repo
+    # Otherwise, specify the GitHub repo like "aws-robotics/aws-robomaker-small-house-world"
+    models_repo: Optional[str] = None  # None means same as source_repo
+
     # Technical details
     has_models: bool = True
     has_lights: bool = True
@@ -99,6 +105,7 @@ class WorldMetadata:
             "source_url": self.source_url,
             "world_file_path": self.world_file_path,
             "license": self.license,
+            "models_repo": self.models_repo or self.source_repo,  # Default to source_repo if not specified
             "environment_type": self.environment_type.value,
             "scale": self.scale.value,
             "terrain_type": self.terrain_type.value,
@@ -208,6 +215,7 @@ WORLD_DATABASE: List[WorldMetadata] = [
         source_url="https://github.com/gazebosim/gazebo-classic",
         world_file_path="worlds/cafe.world",
         license="Apache-2.0",
+        models_repo="osrf/gazebo_models",  # Uses standard Gazebo models
         environment_type=EnvironmentType.INDOOR,
         scale=Scale.SMALL,
         terrain_type=TerrainType.FLAT,
@@ -275,6 +283,7 @@ WORLD_DATABASE: List[WorldMetadata] = [
         source_url="https://github.com/gazebosim/gazebo-classic",
         world_file_path="worlds/willowgarage.world",
         license="Apache-2.0",
+        models_repo="osrf/gazebo_models",  # Uses standard Gazebo models
         environment_type=EnvironmentType.INDOOR,
         scale=Scale.LARGE,
         terrain_type=TerrainType.FLAT,
@@ -429,6 +438,7 @@ WORLD_DATABASE: List[WorldMetadata] = [
         source_url="https://github.com/gazebosim/gazebo-classic",
         world_file_path="worlds/empty.world",
         license="Apache-2.0",
+        models_repo="osrf/gazebo_models",  # Uses standard Gazebo models
         environment_type=EnvironmentType.OUTDOOR,
         scale=Scale.LARGE,
         terrain_type=TerrainType.FLAT,
@@ -445,6 +455,7 @@ WORLD_DATABASE: List[WorldMetadata] = [
         source_url="https://github.com/gazebosim/gazebo-classic",
         world_file_path="worlds/rubble.world",
         license="Apache-2.0",
+        models_repo="osrf/gazebo_models",  # Uses standard Gazebo models
         environment_type=EnvironmentType.OUTDOOR,
         scale=Scale.MEDIUM,
         terrain_type=TerrainType.UNEVEN,
@@ -461,6 +472,7 @@ WORLD_DATABASE: List[WorldMetadata] = [
         source_url="https://github.com/gazebosim/gazebo-classic",
         world_file_path="worlds/heightmap.world",
         license="Apache-2.0",
+        models_repo="osrf/gazebo_models",  # Uses standard Gazebo models
         environment_type=EnvironmentType.OUTDOOR,
         scale=Scale.MEDIUM,
         terrain_type=TerrainType.HEIGHTMAP,
