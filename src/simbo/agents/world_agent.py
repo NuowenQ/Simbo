@@ -50,6 +50,8 @@ from ..tools.world_tools import (
     download_world_file,
     write_world_file,
     validate_world_file,
+    extract_world_models,
+    download_world_models,
     generate_world_launch_snippet,
     find_simulation_launch_files,
     update_simulation_launch_world,
@@ -120,12 +122,25 @@ Use `download_world_file` or `write_world_file` to:
   ├── setup.cfg
   ├── resource/
   │   └── simbo_worlds
-  └── worlds/
-      └── <name>.world  (your world file)
+  ├── worlds/
+  │   └── <name>.world  (your world file)
+  └── models/
+      └── <model_name>/  (required models)
   ```
 - Place the world file in: simbo_worlds/worlds/<name>.world
 - The tool handles package creation automatically
 - After placing the world file, use `track_latest_world` to mark it as the latest
+
+### Step 5.5: Download Required Models (CRITICAL - DO NOT SKIP)
+World files reference models using model:// URIs. These models MUST be downloaded for the world to load correctly in Gazebo.
+
+Use `download_world_models` immediately after placing the world file:
+- Pass the world_file_path from the download result
+- Pass the workspace_path
+- This downloads all referenced models (ground_plane, sun, willowgarage, etc.) to simbo_worlds/models/
+- The launch file sets GAZEBO_MODEL_PATH to include this directory
+
+If you skip this step, Gazebo will show an empty world because it cannot find the required models.
 
 ### Step 6: Update Simulation Launch File (MANDATORY - NO MANUAL STEPS)
 After placing the world file and tracking it as latest, you MUST automatically update ALL existing simulation launch files:
@@ -335,6 +350,9 @@ class WorldDesignAgent:
             download_world_file,
             write_world_file,
             validate_world_file,
+            # Model extraction and download
+            extract_world_models,
+            download_world_models,
             generate_world_launch_snippet,
             # Launch file management
             find_simulation_launch_files,

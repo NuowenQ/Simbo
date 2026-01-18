@@ -514,15 +514,15 @@ def get_data_files():
             (os.path.join('share', package_name, 'launch'), launch_files)
         )
     
-    # Install model files (if any exist)
-    model_files = []
-    for root, dirs, files in os.walk('models'):
-        for file in files:
-            model_files.append(os.path.join(root, file))
-    if model_files:
-        data_files.append(
-            (os.path.join('share', package_name, 'models'), model_files)
-        )
+    # Install model files (preserving directory structure)
+    if os.path.exists('models'):
+        for root, dirs, files in os.walk('models'):
+            if files:
+                # Get relative path from 'models' directory
+                rel_path = os.path.relpath(root, '.')
+                install_path = os.path.join('share', package_name, rel_path)
+                file_paths = [os.path.join(root, f) for f in files]
+                data_files.append((install_path, file_paths))
     
     return data_files
 
@@ -575,7 +575,7 @@ import os
 import json
 from ament_index.python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 
@@ -584,10 +584,18 @@ def generate_launch_description():
     # Get package share directory
     pkg_share = get_package_share_directory('{package_name}')
 
+    # Set GAZEBO_MODEL_PATH to include package models directory
+    models_path = os.path.join(pkg_share, 'models')
+    existing_model_path = os.environ.get('GAZEBO_MODEL_PATH', '')
+    if existing_model_path:
+        gazebo_model_path = models_path + ':' + existing_model_path
+    else:
+        gazebo_model_path = models_path
+
     # Try to get latest world from tracking file, otherwise use argument
     latest_world_file = os.path.join(pkg_share, '.simbo_latest_world')
     default_world = 'empty.world'
-    
+
     if os.path.exists(latest_world_file):
         try:
             with open(latest_world_file, 'r') as f:
@@ -610,6 +618,12 @@ def generate_launch_description():
         LaunchConfiguration('world')
     ])
 
+    # Set environment variable for Gazebo model path
+    set_gazebo_model_path = SetEnvironmentVariable(
+        name='GAZEBO_MODEL_PATH',
+        value=gazebo_model_path
+    )
+
     # Include Gazebo launch
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
@@ -623,6 +637,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        set_gazebo_model_path,
         world_arg,
         gazebo_launch,
     ])
@@ -777,15 +792,15 @@ def get_data_files():
             (os.path.join('share', package_name, 'launch'), launch_files)
         )
     
-    # Install model files (if any exist)
-    model_files = []
-    for root, dirs, files in os.walk('models'):
-        for file in files:
-            model_files.append(os.path.join(root, file))
-    if model_files:
-        data_files.append(
-            (os.path.join('share', package_name, 'models'), model_files)
-        )
+    # Install model files (preserving directory structure)
+    if os.path.exists('models'):
+        for root, dirs, files in os.walk('models'):
+            if files:
+                # Get relative path from 'models' directory
+                rel_path = os.path.relpath(root, '.')
+                install_path = os.path.join('share', package_name, rel_path)
+                file_paths = [os.path.join(root, f) for f in files]
+                data_files.append((install_path, file_paths))
     
     return data_files
 
@@ -1014,7 +1029,7 @@ def _retrieve_world_file_from_github_impl(
     
     # Method 3: Try direct raw URL with multiple branches
     branches_to_try = [branch] if branch else ["main", "master", "develop", "devel"]
-    branches_to_try.extend(["ros2", "humble", "foxy", "noetic"])
+    branches_to_try.extend(["gazebo11", "gazebo9", "ros2", "humble", "foxy", "noetic", "melodic"])
     
     # Remove duplicates while preserving order
     seen = set()
@@ -1434,6 +1449,288 @@ def validate_world_file(world_file_path: str) -> Dict[str, Any]:
         result["errors"].append(f"XML parse error: {str(e)}")
     except Exception as e:
         result["errors"].append(f"Validation error: {str(e)}")
+
+    return result
+
+
+def _extract_world_models_impl(world_file_path: str) -> Dict[str, Any]:
+    """
+    Internal implementation for extracting model references from a world file.
+    """
+    result = {
+        "success": False,
+        "models": [],
+        "model_count": 0,
+        "errors": [],
+    }
+
+    if not os.path.exists(world_file_path):
+        result["errors"].append(f"File not found: {world_file_path}")
+        return result
+
+    try:
+        tree = ET.parse(world_file_path)
+        root = tree.getroot()
+
+        models_found = set()
+
+        # Find all include elements with model:// URIs
+        for include in root.findall(".//include"):
+            uri = include.find("uri")
+            if uri is not None and uri.text and uri.text.startswith("model://"):
+                model_name = uri.text.replace("model://", "")
+                models_found.add(model_name)
+
+        # Also check for mesh URIs that reference models
+        for mesh in root.findall(".//mesh"):
+            uri = mesh.find("uri")
+            if uri is not None and uri.text and uri.text.startswith("model://"):
+                # Extract model name from path like model://some_model/meshes/mesh.dae
+                parts = uri.text.replace("model://", "").split("/")
+                if parts:
+                    models_found.add(parts[0])
+
+        result["models"] = sorted(list(models_found))
+        result["model_count"] = len(models_found)
+        result["success"] = True
+
+    except ET.ParseError as e:
+        result["errors"].append(f"XML parse error: {str(e)}")
+    except Exception as e:
+        result["errors"].append(f"Error extracting models: {str(e)}")
+
+    return result
+
+
+@tool
+def extract_world_models(world_file_path: str) -> Dict[str, Any]:
+    """
+    Extract all model references from a world file.
+
+    Parses the world file and identifies all models referenced via model:// URIs.
+    This is useful to determine which models need to be available for the world
+    to load correctly in Gazebo.
+
+    Args:
+        world_file_path: Path to the world file
+
+    Returns:
+        Dictionary with list of referenced models and their details
+    """
+    return _extract_world_models_impl(world_file_path)
+
+
+def _download_model_from_gazebo_models(
+    model_name: str,
+    output_dir: str,
+    branch: str = "master"
+) -> Dict[str, Any]:
+    """
+    Download a model from the osrf/gazebo_models repository.
+
+    Args:
+        model_name: Name of the model (e.g., "ground_plane", "willowgarage")
+        output_dir: Directory to save the model
+        branch: Branch to download from (default: master)
+
+    Returns:
+        Dictionary with download status
+    """
+    result = {
+        "success": False,
+        "model_path": None,
+        "errors": [],
+        "warnings": [],
+    }
+
+    repo_parts = "osrf/gazebo_models"
+    model_dir = os.path.join(output_dir, model_name)
+
+    # Try git sparse checkout first (most reliable for directories)
+    try:
+        import tempfile
+        import shutil
+
+        git_check = subprocess.run(['git', '--version'], capture_output=True, timeout=5)
+        if git_check.returncode == 0:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                repo_dir = os.path.join(temp_dir, 'repo')
+
+                clone_cmd = [
+                    'git', 'clone',
+                    '--filter=blob:none',
+                    '--sparse',
+                    '--depth', '1',
+                    '--branch', branch,
+                    f'https://github.com/{repo_parts}.git',
+                    repo_dir
+                ]
+
+                clone_result = subprocess.run(
+                    clone_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    cwd=temp_dir
+                )
+
+                if clone_result.returncode == 0:
+                    # Set up sparse checkout for the model directory
+                    sparse_cmd = ['git', 'sparse-checkout', 'set', model_name]
+                    subprocess.run(sparse_cmd, capture_output=True, text=True, timeout=10, cwd=repo_dir)
+
+                    # Checkout
+                    subprocess.run(['git', 'checkout'], capture_output=True, text=True, timeout=10, cwd=repo_dir)
+
+                    source_model = os.path.join(repo_dir, model_name)
+                    if os.path.exists(source_model) and os.path.isdir(source_model):
+                        os.makedirs(output_dir, exist_ok=True)
+                        if os.path.exists(model_dir):
+                            shutil.rmtree(model_dir)
+                        shutil.copytree(source_model, model_dir)
+
+                        result["success"] = True
+                        result["model_path"] = model_dir
+                        return result
+                    else:
+                        result["warnings"].append(f"Model directory not found after checkout: {model_name}")
+    except subprocess.TimeoutExpired:
+        result["warnings"].append("Git clone timed out")
+    except FileNotFoundError:
+        result["warnings"].append("Git not available")
+    except Exception as e:
+        result["warnings"].append(f"Git method failed: {str(e)}")
+
+    # Fallback: try downloading essential files via raw URLs
+    # Models typically have: model.config, model.sdf (or *.sdf)
+    essential_files = ["model.config", "model.sdf"]
+    branches_to_try = [branch, "master", "main"]
+
+    for try_branch in branches_to_try:
+        files_downloaded = 0
+        os.makedirs(model_dir, exist_ok=True)
+
+        for filename in essential_files:
+            raw_url = f"https://raw.githubusercontent.com/{repo_parts}/{try_branch}/{model_name}/{filename}"
+            target_file = os.path.join(model_dir, filename)
+
+            try:
+                req = urllib.request.Request(raw_url)
+                req.add_header('User-Agent', 'Mozilla/5.0')
+
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    if response.status == 200:
+                        with open(target_file, 'wb') as f:
+                            f.write(response.read())
+                        files_downloaded += 1
+            except Exception:
+                continue
+
+        if files_downloaded > 0:
+            result["success"] = True
+            result["model_path"] = model_dir
+            result["warnings"].append(f"Downloaded {files_downloaded} essential files (meshes may be missing)")
+            return result
+
+    result["errors"].append(f"Failed to download model '{model_name}' from osrf/gazebo_models")
+    return result
+
+
+@tool
+def download_world_models(
+    world_file_path: str,
+    workspace_path: str,
+    target_package: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Download all models referenced in a world file to the workspace.
+
+    This tool:
+    1. Extracts all model:// references from the world file
+    2. Downloads each model from osrf/gazebo_models repository
+    3. Places them in the package's models/ directory
+    4. Returns status for each model
+
+    IMPORTANT: This should be called after downloading a world file to ensure
+    all required models are available for Gazebo to load.
+
+    Args:
+        world_file_path: Path to the world file
+        workspace_path: Path to the ROS workspace
+        target_package: Package to store models (default: simbo_worlds)
+
+    Returns:
+        Dictionary with download status for each model
+    """
+    result = {
+        "success": False,
+        "models_downloaded": [],
+        "models_failed": [],
+        "models_skipped": [],
+        "models_dir": None,
+        "errors": [],
+        "warnings": [],
+    }
+
+    # Extract models from world file (use internal impl, not the tool wrapper)
+    extract_result = _extract_world_models_impl(world_file_path)
+    if not extract_result.get("success"):
+        result["errors"].extend(extract_result.get("errors", ["Failed to extract models"]))
+        return result
+
+    models = extract_result.get("models", [])
+    if not models:
+        result["success"] = True
+        result["warnings"].append("No models found in world file")
+        return result
+
+    # Find or create target package
+    if target_package:
+        package_path = os.path.join(workspace_path, "src", target_package)
+    else:
+        package_path = os.path.join(workspace_path, "src", "simbo_worlds")
+
+    if not os.path.exists(package_path):
+        result["errors"].append(f"Package not found: {package_path}")
+        return result
+
+    models_dir = os.path.join(package_path, "models")
+    os.makedirs(models_dir, exist_ok=True)
+    result["models_dir"] = models_dir
+
+    # Download each model
+    for model_name in models:
+        model_path = os.path.join(models_dir, model_name)
+
+        # Skip if already exists
+        if os.path.exists(model_path) and os.path.isdir(model_path):
+            # Check if it has essential files
+            if os.path.exists(os.path.join(model_path, "model.config")) or \
+               os.path.exists(os.path.join(model_path, "model.sdf")):
+                result["models_skipped"].append(model_name)
+                continue
+
+        download_result = _download_model_from_gazebo_models(model_name, models_dir)
+
+        if download_result.get("success"):
+            result["models_downloaded"].append(model_name)
+            result["warnings"].extend(download_result.get("warnings", []))
+        else:
+            result["models_failed"].append({
+                "model": model_name,
+                "errors": download_result.get("errors", []),
+            })
+
+    # Consider success if we downloaded at least some models
+    if result["models_downloaded"] or result["models_skipped"]:
+        result["success"] = True
+
+    if result["models_failed"]:
+        result["warnings"].append(
+            f"Failed to download {len(result['models_failed'])} models. "
+            "These may need to be installed via apt (ros-$ROS_DISTRO-gazebo-ros-pkgs) "
+            "or available in GAZEBO_MODEL_PATH."
+        )
 
     return result
 
