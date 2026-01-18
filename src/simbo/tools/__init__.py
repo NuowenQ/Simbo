@@ -43,6 +43,7 @@ from .world_tools import (
     list_available_worlds,
     find_worlds_package,
     create_worlds_package,
+    migrate_package_to_python,
     download_world_file,
     write_world_file,
     validate_world_file,
@@ -93,6 +94,7 @@ __all__ = [
     "list_available_worlds",
     "find_worlds_package",
     "create_worlds_package",
+    "migrate_package_to_python",
     "download_world_file",
     "write_world_file",
     "validate_world_file",
@@ -100,5 +102,6 @@ __all__ = [
     "find_simulation_launch_files",
     "update_simulation_launch_world",
     "update_all_simulation_launch_files",
+    "retrieve_world_file_from_github",
     "track_latest_world",
 ]

@@ -54,6 +54,7 @@ from ..tools.world_tools import (
     find_simulation_launch_files,
     update_simulation_launch_world,
     update_all_simulation_launch_files,
+    retrieve_world_file_from_github,
     track_latest_world,
 )
 
@@ -111,11 +112,14 @@ Use `search_world_database` with the extracted constraints to:
 ### Step 5: Create Package and Place World File
 Use `download_world_file` or `write_world_file` to:
 - ALWAYS use the fixed package name: simbo_worlds
-- Create simbo_worlds package if it doesn't exist:
+- Create simbo_worlds package if it doesn't exist (Python-only, NO C++/CMake):
   ```
   simbo_worlds/
   ├── package.xml
-  ├── CMakeLists.txt
+  ├── setup.py
+  ├── setup.cfg
+  ├── resource/
+  │   └── simbo_worlds
   └── worlds/
       └── <name>.world  (your world file)
   ```
@@ -154,6 +158,24 @@ Use `validate_world_file` to verify the world file, then report:
 - .gazebo directory
 - Absolute paths outside ROS workspace
 
+## CRITICAL: Correct Import Statement (MANDATORY)
+
+When generating or updating launch files, you MUST ALWAYS use the CORRECT import:
+
+✅ CORRECT:
+```python
+from ament_index.python.packages import get_package_share_directory
+```
+
+❌ WRONG (DO NOT USE):
+```python
+from ament_index_python.packages import get_package_share_directory
+```
+
+**The correct import uses a DOT (.) between "ament_index" and "python", NOT an underscore (_).**
+
+Always verify that any launch file code you generate or update uses the correct import statement.
+
 ## Package Selection Logic (FIXED)
 
 When placing a world file:
@@ -163,8 +185,10 @@ When placing a world file:
 4. NEVER use other package names or ask the user
 
 The simbo_worlds package MUST contain:
-- package.xml
-- CMakeLists.txt (for ament_cmake to install worlds)
+- package.xml (with ament_python build type - NO CMake!)
+- setup.py (Python-only package for installing worlds)
+- setup.cfg (required for ROS2 Python packages)
+- resource/simbo_worlds (ament marker file)
 - worlds/ directory (where world files are placed)
 - .simbo_latest_world (metadata file tracking the latest world)
 
@@ -316,6 +340,8 @@ class WorldDesignAgent:
             find_simulation_launch_files,
             update_simulation_launch_world,
             update_all_simulation_launch_files,
+            # Advanced retrieval
+            retrieve_world_file_from_github,
             # Latest world tracking
             track_latest_world,
             # Workspace analysis (read-only)

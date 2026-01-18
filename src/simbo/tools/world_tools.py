@@ -404,21 +404,27 @@ def create_worlds_package(
     maintainer_email: str = "user@example.com"
 ) -> Dict[str, Any]:
     """
-    Create a new ROS2 package for storing world files.
+    Create a new ROS2 Python package for storing world files.
 
-    Creates a proper ament_cmake package structure:
+    Creates a proper ament_python package structure (NO C++/CMake):
     ```
     simbo_worlds/
     ├── package.xml
-    ├── CMakeLists.txt
-    └── worlds/
-        └── (world files go here)
+    ├── setup.py
+    ├── setup.cfg
+    ├── resource/
+    │   └── simbo_worlds
+    ├── worlds/
+    │   └── (world files go here)
+    └── launch/
+        └── world.launch.py
     ```
 
     The package is configured to:
     - Install world files to share/<package_name>/worlds/
     - Include a launch file for easy world loading
     - Support both .world and .sdf formats
+    - Python-only (no CMake/C++ required)
 
         Args:
         workspace_path: Path to the ROS workspace
@@ -446,10 +452,11 @@ def create_worlds_package(
         os.makedirs(os.path.join(package_path, "worlds"), exist_ok=True)
         os.makedirs(os.path.join(package_path, "launch"), exist_ok=True)
         os.makedirs(os.path.join(package_path, "models"), exist_ok=True)
+        os.makedirs(os.path.join(package_path, "resource"), exist_ok=True)
 
         result["package_path"] = package_path
 
-        # Create package.xml (ament_cmake for world files)
+        # Create package.xml (ament_python - NO CMake!)
         package_xml = f'''<?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
@@ -459,16 +466,16 @@ def create_worlds_package(
   <maintainer email="{maintainer_email}">{maintainer}</maintainer>
   <license>Apache-2.0</license>
 
-  <buildtool_depend>ament_cmake</buildtool_depend>
-
   <exec_depend>gazebo_ros</exec_depend>
   <exec_depend>ros2launch</exec_depend>
 
-  <test_depend>ament_lint_auto</test_depend>
-  <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
 
   <export>
-    <build_type>ament_cmake</build_type>
+    <build_type>ament_python</build_type>
   </export>
 </package>
 '''
@@ -477,46 +484,83 @@ def create_worlds_package(
             f.write(package_xml)
         result["files_created"].append(package_xml_path)
 
-        # Create CMakeLists.txt
-        cmake_content = f'''cmake_minimum_required(VERSION 3.8)
-project({package_name})
+        # Create setup.py (Python-only package)
+        # Note: We use a function to collect data files at build time
+        setup_py_content = f'''from setuptools import setup
+import os
+from glob import glob
 
-if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic)
-endif()
+package_name = '{package_name}'
 
-# Find dependencies
-find_package(ament_cmake REQUIRED)
+def get_data_files():
+    """Collect data files for installation."""
+    data_files = [
+        ('share/ament_index/resource_index/packages',
+            ['resource/' + package_name]),
+        ('share/' + package_name, ['package.xml']),
+    ]
+    
+    # Install world files
+    world_files = glob('worlds/*.world') + glob('worlds/*.sdf')
+    if world_files:
+        data_files.append(
+            (os.path.join('share', package_name, 'worlds'), world_files)
+        )
+    
+    # Install launch files
+    launch_files = glob('launch/*.launch.py')
+    if launch_files:
+        data_files.append(
+            (os.path.join('share', package_name, 'launch'), launch_files)
+        )
+    
+    # Install model files (if any exist)
+    model_files = []
+    for root, dirs, files in os.walk('models'):
+        for file in files:
+            model_files.append(os.path.join(root, file))
+    if model_files:
+        data_files.append(
+            (os.path.join('share', package_name, 'models'), model_files)
+        )
+    
+    return data_files
 
-# Install world files
-install(
-  DIRECTORY worlds/
-  DESTINATION share/${{PROJECT_NAME}}/worlds
+setup(
+    name=package_name,
+    version='0.0.1',
+    packages=[],
+    data_files=get_data_files(),
+    install_requires=['setuptools'],
+    zip_safe=True,
+    maintainer='{maintainer}',
+    maintainer_email='{maintainer_email}',
+    description='{description}',
+    license='Apache-2.0',
+    tests_require=['pytest'],
 )
-
-# Install launch files
-install(
-  DIRECTORY launch/
-  DESTINATION share/${{PROJECT_NAME}}/launch
-)
-
-# Install model files
-install(
-  DIRECTORY models/
-  DESTINATION share/${{PROJECT_NAME}}/models
-)
-
-if(BUILD_TESTING)
-  find_package(ament_lint_auto REQUIRED)
-  ament_lint_auto_find_test_dependencies()
-endif()
-
-ament_package()
 '''
-        cmake_path = os.path.join(package_path, "CMakeLists.txt")
-        with open(cmake_path, 'w') as f:
-            f.write(cmake_content)
-        result["files_created"].append(cmake_path)
+        setup_py_path = os.path.join(package_path, "setup.py")
+        with open(setup_py_path, 'w') as f:
+            f.write(setup_py_content)
+        result["files_created"].append(setup_py_path)
+
+        # Create setup.cfg (CRITICAL for ROS2 Python packages)
+        setup_cfg_content = f"""[develop]
+script_dir=$base/lib/{package_name}
+[install]
+install_scripts=$base/lib/{package_name}
+"""
+        setup_cfg_path = os.path.join(package_path, "setup.cfg")
+        with open(setup_cfg_path, 'w') as f:
+            f.write(setup_cfg_content)
+        result["files_created"].append(setup_cfg_path)
+
+        # Create resource marker file
+        resource_path = os.path.join(package_path, "resource", package_name)
+        with open(resource_path, 'w') as f:
+            f.write("")  # Empty file
+        result["files_created"].append(resource_path)
 
         # Create launch file template
         launch_content = f'''#!/usr/bin/env python3
@@ -528,6 +572,7 @@ Usage:
 """
 
 import os
+import json
 from ament_index.python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
@@ -539,27 +584,31 @@ def generate_launch_description():
     # Get package share directory
     pkg_share = get_package_share_directory('{package_name}')
 
+    # Try to get latest world from tracking file, otherwise use argument
+    latest_world_file = os.path.join(pkg_share, '.simbo_latest_world')
+    default_world = 'empty.world'
+    
+    if os.path.exists(latest_world_file):
+        try:
+            with open(latest_world_file, 'r') as f:
+                latest_info = json.load(f)
+                default_world = latest_info.get('latest_world', 'empty.world')
+        except Exception:
+            pass  # Fall back to default
+
     # Declare arguments
     world_arg = DeclareLaunchArgument(
         'world',
-        default_value='empty.world',
+        default_value=default_world,
         description='Name of the world file (with .world extension)'
     )
 
-    # World file path - use PathJoinSubstitution with proper string construction
-    # The standard ROS2 approach: construct path components and join them
-    # For filename with extension, we'll use a substitution that concatenates
-    # Since we can't nest lists in PathJoinSubstitution, we construct the full path differently
-    # Option: Assume world argument includes .world extension, or handle it in the argument default
-    # Better: Use os.path.join with substitution evaluation at runtime
-    # Most common pattern: construct as string path using substitution
+    # World file path - construct using PathJoinSubstitution
     world_file = PathJoinSubstitution([
         pkg_share,
         'worlds',
         LaunchConfiguration('world')
     ])
-    # Note: The world argument should be passed with .world extension
-    # Or we modify the argument to include it by default
 
     # Include Gazebo launch
     gazebo_launch = IncludeLaunchDescription(
@@ -617,6 +666,424 @@ def generate_launch_description():
         result["errors"].append(str(e))
 
     return result
+
+
+@tool
+def migrate_package_to_python(
+    workspace_path: str,
+    package_name: str = "simbo_worlds"
+) -> Dict[str, Any]:
+    """
+    Migrate an existing ament_cmake package to ament_python (Python-only).
+    
+    This tool converts CMake-based packages to Python-only packages by:
+    - Updating package.xml to use ament_python
+    - Creating setup.py and setup.cfg
+    - Creating resource marker file
+    - Removing CMakeLists.txt (optional backup)
+    - Preserving all existing worlds, launch files, and models
+    
+    Args:
+        workspace_path: Path to the ROS workspace
+        package_name: Name of the package to migrate (default: "simbo_worlds")
+    
+    Returns:
+        Dictionary with migration status and details
+    """
+    result = {
+        "success": False,
+        "package_path": None,
+        "files_created": [],
+        "files_removed": [],
+        "errors": [],
+    }
+    
+    src_path = os.path.join(workspace_path, "src")
+    package_path = os.path.join(src_path, package_name)
+    result["package_path"] = package_path
+    
+    if not os.path.exists(package_path):
+        result["errors"].append(f"Package not found: {package_path}")
+        return result
+    
+    try:
+        # Read existing package.xml
+        package_xml_path = os.path.join(package_path, "package.xml")
+        if not os.path.exists(package_xml_path):
+            result["errors"].append("package.xml not found")
+            return result
+        
+        # Update package.xml to ament_python
+        with open(package_xml_path, 'r') as f:
+            xml_content = f.read()
+        
+        # Replace buildtool_depend and build_type
+        xml_content = xml_content.replace(
+            '<buildtool_depend>ament_cmake</buildtool_depend>',
+            ''
+        )
+        xml_content = xml_content.replace(
+            '<build_type>ament_cmake</build_type>',
+            '<build_type>ament_python</build_type>'
+        )
+        
+        # Update test dependencies to Python ones
+        xml_content = xml_content.replace(
+            '<test_depend>ament_lint_auto</test_depend>',
+            '<test_depend>ament_copyright</test_depend>'
+        )
+        xml_content = xml_content.replace(
+            '<test_depend>ament_lint_common</test_depend>',
+            '<test_depend>ament_flake8</test_depend>\n  <test_depend>ament_pep257</test_depend>'
+        )
+        
+        # Add python3-pytest if not present
+        if 'python3-pytest' not in xml_content:
+            xml_content = xml_content.replace(
+                '</package>',
+                '  <test_depend>python3-pytest</test_depend>\n\n</package>'
+            )
+        
+        with open(package_xml_path, 'w') as f:
+            f.write(xml_content)
+        result["files_created"].append(f"{package_xml_path} (updated)")
+        
+        # Create setup.py (same as in create_worlds_package)
+        setup_py_content = f'''from setuptools import setup
+import os
+from glob import glob
+
+package_name = '{package_name}'
+
+def get_data_files():
+    """Collect data files for installation."""
+    data_files = [
+        ('share/ament_index/resource_index/packages',
+            ['resource/' + package_name]),
+        ('share/' + package_name, ['package.xml']),
+    ]
+    
+    # Install world files
+    world_files = glob('worlds/*.world') + glob('worlds/*.sdf')
+    if world_files:
+        data_files.append(
+            (os.path.join('share', package_name, 'worlds'), world_files)
+        )
+    
+    # Install launch files
+    launch_files = glob('launch/*.launch.py')
+    if launch_files:
+        data_files.append(
+            (os.path.join('share', package_name, 'launch'), launch_files)
+        )
+    
+    # Install model files (if any exist)
+    model_files = []
+    for root, dirs, files in os.walk('models'):
+        for file in files:
+            model_files.append(os.path.join(root, file))
+    if model_files:
+        data_files.append(
+            (os.path.join('share', package_name, 'models'), model_files)
+        )
+    
+    return data_files
+
+setup(
+    name=package_name,
+    version='0.0.1',
+    packages=[],
+    data_files=get_data_files(),
+    install_requires=['setuptools'],
+    zip_safe=True,
+    maintainer='user',
+    maintainer_email='user@example.com',
+    description='Gazebo world files for simulation',
+    license='Apache-2.0',
+    tests_require=['pytest'],
+)
+'''
+        setup_py_path = os.path.join(package_path, "setup.py")
+        with open(setup_py_path, 'w') as f:
+            f.write(setup_py_content)
+        result["files_created"].append(setup_py_path)
+        
+        # Create setup.cfg
+        setup_cfg_content = f"""[develop]
+script_dir=$base/lib/{package_name}
+[install]
+install_scripts=$base/lib/{package_name}
+"""
+        setup_cfg_path = os.path.join(package_path, "setup.cfg")
+        with open(setup_cfg_path, 'w') as f:
+            f.write(setup_cfg_content)
+        result["files_created"].append(setup_cfg_path)
+        
+        # Create resource marker
+        os.makedirs(os.path.join(package_path, "resource"), exist_ok=True)
+        resource_path = os.path.join(package_path, "resource", package_name)
+        with open(resource_path, 'w') as f:
+            f.write("")
+        result["files_created"].append(resource_path)
+        
+        # Backup and remove CMakeLists.txt
+        cmake_path = os.path.join(package_path, "CMakeLists.txt")
+        if os.path.exists(cmake_path):
+            backup_path = os.path.join(package_path, "CMakeLists.txt.backup")
+            if not os.path.exists(backup_path):
+                import shutil
+                shutil.copy2(cmake_path, backup_path)
+            os.remove(cmake_path)
+            result["files_removed"].append("CMakeLists.txt (backed up)")
+        
+        result["success"] = True
+        
+    except Exception as e:
+        result["errors"].append(f"Error migrating package: {str(e)}")
+    
+    return result
+
+
+# =============================================================================
+# Advanced World File Retrieval Tools
+# =============================================================================
+
+def _retrieve_world_file_from_github_impl(
+    repository_url: str,
+    file_path: str,
+    output_path: str,
+    branch: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Retrieve a world file from a GitHub repository using multiple methods.
+    
+    This tool tries several approaches:
+    1. GitHub API to get file content directly
+    2. Git sparse checkout (if git is available)
+    3. Direct raw URL download with multiple branch attempts
+    
+    Args:
+        repository_url: GitHub repository URL (e.g., "https://github.com/osrf/gazebo_models")
+        file_path: Path to the file within the repository (e.g., "worlds/factory.world")
+        output_path: Where to save the downloaded file
+        branch: Optional branch name (if None, will try to detect)
+    
+    Returns:
+        Dictionary with retrieval status and details
+    """
+    result = {
+        "success": False,
+        "method_used": None,
+        "output_path": output_path,
+        "errors": [],
+        "warnings": [],
+    }
+    
+    # Extract repository info
+    repo_parts = repository_url.replace("https://github.com/", "").replace("http://github.com/", "").rstrip('/').replace(".git", "")
+    
+    # Method 1: Try GitHub API to get file content directly
+    try:
+        # First, get the default branch if not provided
+        if not branch:
+            try:
+                api_url = f"https://api.github.com/repos/{repo_parts}"
+                req = urllib.request.Request(api_url)
+                req.add_header('User-Agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36')
+                req.add_header('Accept', 'application/vnd.github.v3+json')
+                
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    if response.status == 200:
+                        repo_info = json.loads(response.read().decode())
+                        branch = repo_info.get('default_branch', 'main')
+            except Exception as e:
+                result["warnings"].append(f"Could not detect default branch: {str(e)}")
+                branch = "main"  # Fallback
+        
+        # Try to get file content via GitHub API
+        api_file_url = f"https://api.github.com/repos/{repo_parts}/contents/{file_path}"
+        if branch:
+            api_file_url += f"?ref={branch}"
+        
+        try:
+            req = urllib.request.Request(api_file_url)
+            req.add_header('User-Agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36')
+            req.add_header('Accept', 'application/vnd.github.v3+json')
+            
+            with urllib.request.urlopen(req, timeout=10) as response:
+                if response.status == 200:
+                    file_info = json.loads(response.read().decode())
+                    
+                    # GitHub API returns base64 encoded content
+                    if file_info.get('encoding') == 'base64':
+                        import base64
+                        file_content = base64.b64decode(file_info['content']).decode('utf-8')
+                        
+                        # Ensure output directory exists
+                        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                        
+                        with open(output_path, 'w', encoding='utf-8') as f:
+                            f.write(file_content)
+                        
+                        result["success"] = True
+                        result["method_used"] = "GitHub API"
+                        result["branch_used"] = branch
+                        return result
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                result["warnings"].append(f"File not found at {file_path} in branch {branch}")
+            else:
+                result["warnings"].append(f"GitHub API error: {e.code} {e.reason}")
+        except Exception as e:
+            result["warnings"].append(f"GitHub API method failed: {str(e)}")
+    
+    except Exception as e:
+        result["warnings"].append(f"GitHub API approach failed: {str(e)}")
+    
+    # Method 2: Try git sparse checkout (if git is available)
+    try:
+        import tempfile
+        import shutil
+        
+        # Check if git is available
+        git_check = subprocess.run(['git', '--version'], capture_output=True, timeout=5)
+        if git_check.returncode == 0:
+            # Create temporary directory for cloning
+            with tempfile.TemporaryDirectory() as temp_dir:
+                repo_dir = os.path.join(temp_dir, 'repo')
+                
+                # Clone with sparse checkout
+                clone_cmd = [
+                    'git', 'clone',
+                    '--filter=blob:none',  # Don't download all blobs
+                    '--sparse',
+                    '--depth', '1',
+                    repository_url,
+                    repo_dir
+                ]
+                
+                if branch:
+                    clone_cmd.extend(['--branch', branch])
+                
+                clone_result = subprocess.run(
+                    clone_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    cwd=temp_dir
+                )
+                
+                if clone_result.returncode == 0:
+                    # Set up sparse checkout for the specific file
+                    sparse_cmd = ['git', 'sparse-checkout', 'set', file_path]
+                    sparse_result = subprocess.run(
+                        sparse_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                        cwd=repo_dir
+                    )
+                    
+                    if sparse_result.returncode == 0:
+                        # Checkout the file
+                        checkout_cmd = ['git', 'checkout']
+                        checkout_result = subprocess.run(
+                            checkout_cmd,
+                            capture_output=True,
+                            text=True,
+                            timeout=10,
+                            cwd=repo_dir
+                        )
+                        
+                        # Copy the file
+                        source_file = os.path.join(repo_dir, file_path)
+                        if os.path.exists(source_file):
+                            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                            shutil.copy2(source_file, output_path)
+                            
+                            result["success"] = True
+                            result["method_used"] = "Git sparse checkout"
+                            result["branch_used"] = branch or "default"
+                            return result
+    except FileNotFoundError:
+        result["warnings"].append("Git not available, skipping git clone method")
+    except subprocess.TimeoutExpired:
+        result["warnings"].append("Git clone timed out")
+    except Exception as e:
+        result["warnings"].append(f"Git clone method failed: {str(e)}")
+    
+    # Method 3: Try direct raw URL with multiple branches
+    branches_to_try = [branch] if branch else ["main", "master", "develop", "devel"]
+    branches_to_try.extend(["ros2", "humble", "foxy", "noetic"])
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    branches_to_try = [b for b in branches_to_try if b and not (b in seen or seen.add(b))]
+    
+    file_path_variations = [
+        file_path,
+        file_path.lstrip('/'),
+        file_path.replace('\\', '/'),
+    ]
+    
+    for branch_name in branches_to_try:
+        for path_var in file_path_variations:
+            raw_url = f"https://raw.githubusercontent.com/{repo_parts}/{branch_name}/{path_var}"
+            
+            try:
+                req = urllib.request.Request(raw_url)
+                req.add_header('User-Agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36')
+                
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    if response.status == 200:
+                        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                        with open(output_path, 'wb') as f:
+                            f.write(response.read())
+                        
+                        result["success"] = True
+                        result["method_used"] = f"Raw URL (branch: {branch_name})"
+                        result["branch_used"] = branch_name
+                        return result
+            except Exception:
+                continue
+    
+    # All methods failed
+    result["errors"].append(f"Failed to retrieve file using all methods: API, git clone, and raw URLs")
+    result["errors"].append(f"Repository: {repository_url}, File: {file_path}")
+    
+    return result
+
+
+@tool
+def retrieve_world_file_from_github(
+    repository_url: str,
+    file_path: str,
+    output_path: str,
+    branch: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Retrieve a world file from a GitHub repository using multiple methods.
+    
+    This tool tries several approaches:
+    1. GitHub API to get file content directly
+    2. Git sparse checkout (if git is available)
+    3. Direct raw URL download with multiple branch attempts
+    
+    Args:
+        repository_url: GitHub repository URL (e.g., "https://github.com/osrf/gazebo_models")
+        file_path: Path to the file within the repository (e.g., "worlds/factory.world")
+        output_path: Where to save the downloaded file
+        branch: Optional branch name (if None, will try to detect)
+    
+    Returns:
+        Dictionary with retrieval status and details
+    """
+    return _retrieve_world_file_from_github_impl(
+        repository_url=repository_url,
+        file_path=file_path,
+        output_path=output_path,
+        branch=branch
+    )
 
 
 @tool
@@ -707,48 +1174,50 @@ def download_world_file(
     source_url = world.source_url
     file_path = world.world_file_path
 
-    if "github.com" in source_url:
-        # Convert to raw.githubusercontent.com URL
-        repo_parts = source_url.replace("https://github.com/", "").rstrip('/')
-        raw_url = f"https://raw.githubusercontent.com/{repo_parts}/main/{file_path}"
-        # Also try master branch as fallback
-        raw_url_master = f"https://raw.githubusercontent.com/{repo_parts}/master/{file_path}"
-    else:
-        result["errors"].append(f"Unsupported source URL format: {source_url}")
-        return result
-
     # Download the file
     target_path = os.path.join(worlds_dir, world_name)
 
-    try:
-        # Try main branch first
-        try:
-            urllib.request.urlretrieve(raw_url, target_path)
-        except urllib.error.HTTPError:
-            # Try master branch
-            urllib.request.urlretrieve(raw_url_master, target_path)
-
-        result["success"] = True
-        result["world_file_path"] = target_path
-        result["launch_command"] = f"ros2 launch {result['package_used']} world.launch.py world:={os.path.splitext(world_name)[0]}"
-        
-        # Track this as the latest world
-        track_result = track_latest_world.invoke({
-            "workspace_path": workspace_path,
-            "world_file_name": world_name,
-            "worlds_package_name": result["package_used"]
-        })
-        if track_result.get("success"):
-            result["latest_tracked"] = True
-        else:
-            result["warnings"].append(f"Failed to track latest world: {track_result.get('errors', [])}")
-
-    except Exception as e:
-        result["errors"].append(f"Failed to download world file: {str(e)}")
-        result["warnings"].append(
-            f"You may need to manually download from: {source_url}"
+    if "github.com" in source_url:
+        # Use the new advanced retrieval implementation
+        # Call the implementation function directly (not the tool wrapper)
+        retrieve_result = _retrieve_world_file_from_github_impl(
+            repository_url=source_url,
+            file_path=file_path,
+            output_path=target_path,
+            branch=None  # Will auto-detect
         )
-
+        
+        if retrieve_result.get("success"):
+            download_success = True
+            result["changes_made"] = [f"Downloaded using {retrieve_result.get('method_used')}"]
+            if retrieve_result.get("branch_used"):
+                result["changes_made"].append(f"Branch: {retrieve_result.get('branch_used')}")
+        else:
+            download_success = False
+            result["errors"].extend(retrieve_result.get("errors", []))
+            result["warnings"].extend(retrieve_result.get("warnings", []))
+        
+        if download_success:
+            result["success"] = True
+            result["world_file_path"] = target_path
+            result["launch_command"] = f"ros2 launch {result['package_used']} world.launch.py world:={os.path.splitext(world_name)[0]}"
+            
+            # Track this as the latest world
+            track_result = track_latest_world.invoke({
+                "workspace_path": workspace_path,
+                "world_file_name": world_name,
+                "worlds_package_name": result["package_used"]
+            })
+            if track_result.get("success"):
+                result["latest_tracked"] = True
+            else:
+                result["warnings"].append(f"Failed to track latest world: {track_result.get('errors', [])}")
+    else:
+        result["errors"].append(f"Unsupported source URL format: {source_url}")
+        result["warnings"].append("Only GitHub repositories are currently supported for automatic download")
+    
+    # If download failed, create placeholder
+    if not result.get("success"):
         # Create a placeholder with instructions
         placeholder_content = f'''<?xml version="1.0" ?>
 <!--
@@ -774,11 +1243,13 @@ def download_world_file(
   </world>
 </sdf>
 '''
-        with open(target_path, 'w') as f:
-            f.write(placeholder_content)
-
-        result["world_file_path"] = target_path
-        result["warnings"].append(f"Created placeholder world file at: {target_path}")
+        try:
+            with open(target_path, 'w') as f:
+                f.write(placeholder_content)
+            result["world_file_path"] = target_path
+            result["warnings"].append(f"Created placeholder world file at: {target_path}")
+        except Exception as e:
+            result["errors"].append(f"Failed to create placeholder file: {str(e)}")
 
     return result
 
@@ -1144,20 +1615,29 @@ def update_simulation_launch_world(
         if is_python:
             # Handle Python launch files
 
-            # Check if get_package_share_directory import exists
-            if "get_package_share_directory" not in original_content:
-                # Add the import
+            # CRITICAL: Fix any incorrect import statements first
+            # Replace wrong import: from ament_index_python.packages import ...
+            # With correct import: from ament_index.python.packages import ...
+            wrong_import_pattern = r'from\s+ament_index_python\.packages\s+import\s+get_package_share_directory'
+            correct_import = "from ament_index.python.packages import get_package_share_directory"
+            if re.search(wrong_import_pattern, new_content):
+                new_content = re.sub(wrong_import_pattern, correct_import, new_content)
+                result["changes_made"].append("Fixed incorrect import: changed ament_index_python to ament_index.python")
+
+            # Check if get_package_share_directory import exists (with correct syntax)
+            if "get_package_share_directory" not in new_content:
+                # Add the import with CORRECT syntax
                 import_line = "from ament_index.python.packages import get_package_share_directory\n"
                 # Find where to insert (after other imports or at the beginning)
-                import_match = re.search(r'^(import|from)\s+', original_content, re.MULTILINE)
+                import_match = re.search(r'^(import|from)\s+', new_content, re.MULTILINE)
                 if import_match:
                     # Find the last import line
                     last_import = 0
-                    for match in re.finditer(r'^(import|from)\s+.+$', original_content, re.MULTILINE):
+                    for match in re.finditer(r'^(import|from)\s+.+$', new_content, re.MULTILINE):
                         last_import = match.end()
-                    new_content = original_content[:last_import] + "\n" + import_line + original_content[last_import:]
+                    new_content = new_content[:last_import] + "\n" + import_line + new_content[last_import:]
                 else:
-                    new_content = import_line + original_content
+                    new_content = import_line + new_content
                 result["changes_made"].append("Added get_package_share_directory import")
 
             # Generate the new world path code
