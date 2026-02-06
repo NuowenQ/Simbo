@@ -170,9 +170,9 @@ Edit `config/settings.yaml` to customize:
 
 ### Stage 2: Multi-Agent Architecture
 - Manager Agent for orchestration
-- World Design Agent
+- World Design Agent (completed)
 - Robot Model Agent
-- Programming Agent
+- Programming Agent (completed)
 
 ### Stage 3: Full Simulation Pipeline
 - URDF/SDF generation
@@ -182,14 +182,9 @@ Edit `config/settings.yaml` to customize:
 
 ## Contributing
 
-Contributions are welcome! Please read our contributing guidelines before submitting PRs.
-
-## License
-
-MIT License - see LICENSE file for details.
+Contributions are welcome!
 
 ## Acknowledgments
 
-- Built with [LangChain](https://langchain.com/) and [LangGraph](https://github.com/langchain-ai/langgraph)
-- Powered by OpenAI GPT-4
+- Powered by OpenAI GPT-4 API
 - UI built with [Streamlit](https://streamlit.io/)
