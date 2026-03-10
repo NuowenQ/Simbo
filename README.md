@@ -277,15 +277,7 @@ code_generation:
 
 ---
 
-<<<<<<< HEAD
-### Stage 2: Multi-Agent Architecture
-- Manager Agent for orchestration
-- World Design Agent (completed)
-- Robot Model Agent
-- Programming Agent (completed)
-=======
 ## Roadmap
->>>>>>> 17a5da4 (Finalize readme)
 
 ### Current Release
 - [x] Autonomous ROS code generation (controllers, launch files, packages)
@@ -307,9 +299,6 @@ code_generation:
 
 ## Contributing
 
-<<<<<<< HEAD
-Contributions are welcome!
-=======
 Contributions are welcome. Please open an issue to discuss proposed changes before submitting a pull request.
 
 ---
@@ -319,7 +308,6 @@ Contributions are welcome. Please open an issue to discuss proposed changes befo
 MIT License — see [LICENSE](LICENSE) for details.
 
 ---
->>>>>>> 17a5da4 (Finalize readme)
 
 ## Acknowledgments
 
